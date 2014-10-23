@@ -214,40 +214,37 @@ namespace {
                       GlobalVariable *const load) {
     Function *const main = M.getFunction("main");
 
-    if (main) {
-      for (Function::iterator bb = main->begin(); bb != main->end(); bb++) {
+    // Iterate over basic blocks.
+    for (Function::iterator bb = main->begin(); bb != main->end(); bb++) {
         TerminatorInst *const terminator = bb->getTerminator();
 
         // If we have a return (i.e. program exit) instruction, then
         // add in the debug printouts.
         if (dyn_cast<ReturnInst>(terminator)) {
-          printResultsLine(M, terminator);
-          printGVar32(M, terminator, store, GLOBAL_STORE_STR,
-                      "Number of STORE instructions executed: %d\x0A", 43);
-          printGVar32(M, terminator, load, GLOBAL_LOAD_STR,
-                      "Number of LOAD instructions executed:  %d\x0A", 43);
+            printResultsLine(M, terminator);
+            printGVar32(M, terminator, store, GLOBAL_STORE_STR,
+                        "Number of STORE instructions executed: %d\x0A", 43);
+            printGVar32(M, terminator, load, GLOBAL_LOAD_STR,
+                        "Number of LOAD instructions executed:  %d\x0A", 43);
         }
-      }
-
-    } else {
-      errs() << "No main method!\n";
-      return;
     }
   }
 
-  // MemoryCounter - The first implementation, without getAnalysisUsage.
+  // MemoryCounter.
   struct MemoryCounter : public ModulePass {
     static char ID; // Pass identification, replacement for typeid
     MemoryCounter() : ModulePass(ID) {}
 
     bool runOnModule(Module &M) override {
-      // Add global load/store counters
+      Module::FunctionListType &funcs = M.getFunctionList();
+
+      // Get global load/store counter variables
       GlobalVariable *const store = createGVarInt32(M, GLOBAL_STORE, 0);
       GlobalVariable *const load = createGVarInt32(M, GLOBAL_LOAD, 0);
 
       // Instrument functions
-      for (Module::FunctionListType::iterator function = M.getFunctionList().begin();
-           function != M.getFunctionList().end(); function++) {
+      for (Module::FunctionListType::iterator function = funcs.begin();
+           function != funcs.end(); function++) {
         instrumentFunction(M, *function, store, load);
       }
 
