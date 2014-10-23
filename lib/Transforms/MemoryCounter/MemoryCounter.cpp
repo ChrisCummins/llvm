@@ -34,18 +34,26 @@ namespace {
     return M.getFunction("main");
   }
 
-  // Convert an int to 32 bit unsigned ConstantInt.
-  ConstantInt *int2const32(Module &M, const int value) {
-    return ConstantInt::get(M.getContext(), APInt(32, value, false));
+  // Type conversion wrappers
+  ConstantInt *int2const(Module &M, const int value, const size_t nbits) {
+    return ConstantInt::get(M.getContext(), APInt(nbits, value, false));
   }
 
-  // Create a new 32 bit global variable with name "name" and initial
+  ConstantInt *int2const32(Module &M, const int value) {
+    return int2const(M, value, 32);
+  }
+
+  ConstantInt *int2const64(Module &M, const int value) {
+    return int2const(M, value, 64);
+  }
+
+  // Create a new 64 bit global variable with name "name" and initial
   // value "value".
-  GlobalVariable *createGVarInt32(Module &M, const char *name,
+  GlobalVariable *createGVarInt64(Module &M, const char *name,
                                   const int value) {
     GlobalVariable *const var
         = new GlobalVariable(/*Module=*/M,
-                             /*Type=*/IntegerType::get(M.getContext(), 32),
+                             /*Type=*/IntegerType::get(M.getContext(), 64),
                              /*isConstant=*/false,
                              /*Linkage=*/GlobalValue::ExternalLinkage,
                              /*Initializer=*/0, // has initializer, specified below
@@ -55,25 +63,25 @@ namespace {
     // multiple-definition errors when linking multiple files which
     // have been instrumented.
     if (hasMainMethod(M)) {
-        var->setAlignment(4);
-        var->setInitializer(int2const32(M, value));
+        var->setAlignment(8);
+        var->setInitializer(int2const64(M, value));
     }
     return var;
   }
 
   // Append instruction "i" with a set of instructions that increments
-  // a global 32 bit integer variable "gvar" by amount "value".
-  void addGVarInt32andConst32(Module &M, Instruction *const i,
+  // a global 64 bit integer variable "gvar" by amount "value".
+  void addGVarInt64andConst64(Module &M, Instruction *const i,
                               GlobalVariable *const gvar, const int value) {
-    ConstantInt *const const_value = int2const32(M, value);
+    ConstantInt *const const_value = int2const64(M, value);
     LoadInst *const load = new LoadInst(gvar, "", false, i);
     BinaryOperator *const add = BinaryOperator::Create(Instruction::Add,
                                                        load, const_value,
                                                        "", i);
     StoreInst *const store = new StoreInst(add, gvar, false, i);
 
-    load->setAlignment(4);
-    store->setAlignment(4);
+    load->setAlignment(8);
+    store->setAlignment(8);
   }
 
   // Instrument a function so that it counts how many load and store
@@ -101,9 +109,9 @@ namespace {
       // Add store and load instruction counters to global counters
       TerminatorInst *const terminator = block->getTerminator();
       if (store_count)
-        addGVarInt32andConst32(M, terminator, store, store_count);
+        addGVarInt64andConst64(M, terminator, store, store_count);
       if (load_count)
-        addGVarInt32andConst32(M, terminator, load, load_count);
+        addGVarInt64andConst64(M, terminator, load, load_count);
     }
   }
 
@@ -115,7 +123,7 @@ namespace {
     std::vector<Type *>FuncTy_6_args;
     FuncTy_6_args.push_back(PointerTy_4);
     FunctionType *const FuncTy_6
-        = FunctionType::get(/*Result=*/IntegerType::get(M.getContext(), 32),
+        = FunctionType::get(/*Result=*/IntegerType::get(M.getContext(), 64),
                             /*Params=*/FuncTy_6_args,
                             /*isVarArg=*/true);
     Function *func_printf = M.getFunction("printf");
@@ -170,8 +178,8 @@ namespace {
     printf->setAttributes(printf_PAL);
   }
 
-  // Print a global 32 bit integer variable.
-  void printGVar32(Module &M, Instruction *const i,
+  // Print a global 64 bit integer variable.
+  void printGVar64(Module &M, Instruction *const i,
                    GlobalVariable *const gvar, const char *name,
                    const char *fmt, size_t fmt_len) {
     Function *const func_printf = getPrintfFunction(M);
@@ -196,7 +204,7 @@ namespace {
 
     // Add instructions:
     LoadInst *const load = new LoadInst(gvar, "", false, i);
-    load->setAlignment(4);
+    load->setAlignment(8);
     std::vector<Value *> printf_params;
     printf_params.push_back(const_ptr);
     printf_params.push_back(load);
@@ -222,9 +230,9 @@ namespace {
         // add in the debug printouts.
         if (dyn_cast<ReturnInst>(terminator)) {
             printResultsLine(M, terminator);
-            printGVar32(M, terminator, store, GLOBAL_STORE_STR,
+            printGVar64(M, terminator, store, GLOBAL_STORE_STR,
                         "Number of STORE instructions executed: %d\x0A", 43);
-            printGVar32(M, terminator, load, GLOBAL_LOAD_STR,
+            printGVar64(M, terminator, load, GLOBAL_LOAD_STR,
                         "Number of LOAD instructions executed:  %d\x0A", 43);
         }
     }
@@ -239,8 +247,8 @@ namespace {
       Module::FunctionListType &funcs = M.getFunctionList();
 
       // Get global load/store counter variables
-      GlobalVariable *const store = createGVarInt32(M, GLOBAL_STORE, 0);
-      GlobalVariable *const load = createGVarInt32(M, GLOBAL_LOAD, 0);
+      GlobalVariable *const store = createGVarInt64(M, GLOBAL_STORE, 0);
+      GlobalVariable *const load = createGVarInt64(M, GLOBAL_LOAD, 0);
 
       // Instrument functions
       for (Module::FunctionListType::iterator function = funcs.begin();
