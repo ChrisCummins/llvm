@@ -7,6 +7,7 @@ build=Debug+Asserts
 
 opt=$prefix/$build/bin/opt
 clangxx=clang++
+llvmdis=llvm-dis
 
 module=Hello
 module_path=$prefix/$build/lib/LLVM$module.so
@@ -19,5 +20,18 @@ $clangxx -emit-llvm $src.cpp -S -o $src.ll
 # Generate bitcode:
 $clangxx -emit-llvm $src.cpp -c -o $src.bc
 
+# Generate exec:
+$clangxx $src.bc -o $src
+
+# Run pass:
 $opt -load $module_path -$(echo $module | tr '[:upper:]' '[:lower:]') \
-    -time-passes -stats < $src.bc > /dev/null
+     -stats < $src.bc > $src-pass.bc
+
+# Generate bytecode:
+$llvmdis $src-pass.bc
+
+# Generate exec:
+$clangxx $src-pass.bc -o $src-pass
+
+echo "Bytecode modifications:"
+diff $src-pass.ll $src.ll
