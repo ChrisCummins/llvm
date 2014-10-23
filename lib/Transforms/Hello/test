@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+
+set -e
+
+prefix=~/src/llvm
+build=Debug+Asserts
+
+opt=$prefix/$build/bin/opt
+clangxx=clang++
+
+module=Hello
+module_path=$prefix/$build/lib/LLVM$module.so
+
+src=test
+
+$clangxx -emit-llvm $src.cpp -c -o $src.bc
+
+$opt -load $module_path -$(echo $module | tr '[:upper:]' '[:lower:]') \
+    -time-passes -stats < $src.bc > /dev/null
