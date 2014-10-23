@@ -2,8 +2,8 @@
 
 set -e
 
-prefix=~/src/llvm
-build=Debug+Asserts
+prefix=../../..
+build=Release+Asserts
 
 opt=$prefix/$build/bin/opt
 clangxx=clang++
