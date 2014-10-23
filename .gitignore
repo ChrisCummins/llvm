@@ -276,6 +276,7 @@ docs/_build
 /lib/Target/XCore/XCoreGenRegisterInfo.inc
 /lib/Target/XCore/XCoreGenSubtargetInfo.inc
 /lib/Transforms/Hello/Debug+Asserts/
+/lib/Transforms/MemoryCounter/Debug+Asserts/
 /lib/Transforms/IPO/Debug+Asserts/
 /lib/Transforms/InstCombine/Debug+Asserts/
 /lib/Transforms/Instrumentation/Debug+Asserts/
