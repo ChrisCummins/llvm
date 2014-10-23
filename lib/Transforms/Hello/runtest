@@ -14,14 +14,16 @@ module_path=$prefix/$build/lib/LLVM$module.so
 
 src=test
 
+CFLAGS="-O0"
+
 # Generate bytecode:
-$clangxx -emit-llvm $src.cpp -S -o $src.ll
+$clangxx $CFLAGS -emit-llvm $src.cpp -S -o $src.ll
 
 # Generate bitcode:
-$clangxx -emit-llvm $src.cpp -c -o $src.bc
+$clangxx $CFLAGS -emit-llvm $src.cpp -c -o $src.bc
 
 # Generate exec:
-$clangxx $src.bc -o $src
+$clangxx $CFLAGS $src.bc -o $src
 
 # Run pass:
 $opt -load $module_path -$(echo $module | tr '[:upper:]' '[:lower:]') \
@@ -31,7 +33,11 @@ $opt -load $module_path -$(echo $module | tr '[:upper:]' '[:lower:]') \
 $llvmdis $src-pass.bc
 
 # Generate exec:
-$clangxx $src-pass.bc -o $src-pass
+$clangxx $CFLAGS $src-pass.bc -o $src-pass
 
 echo "Bytecode modifications:"
+set +e
 diff $src-pass.ll $src.ll
+set -e
+
+exit 0
