@@ -14,8 +14,6 @@
 
 using namespace llvm;
 
-#define DEBUG_TYPE "instructions"
-
 // Global variable names
 #define GLOBAL_STORE     "$store$"
 #define GLOBAL_LOAD      "$load$"
@@ -23,8 +21,13 @@ using namespace llvm;
 #define GLOBAL_LOAD_STR   GLOBAL_LOAD"str"
 #define RESULTS_STR      "$RESULTSLINE$"
 
-STATISTIC(StoreInstCount, "Number of instrumented STOREs");
-STATISTIC(LoadInstCount,  "Number of instrumented LOADs");
+// Debug statistics
+#define DEBUG_TYPE ""
+STATISTIC(BlocksCount,    "no of basic blocks");
+STATISTIC(InstCount,      "no of instructions");
+STATISTIC(StoreInstCount, "no of STORE instructions instrumented");
+STATISTIC(LoadInstCount,  "no of LOAD instructions instrumented");
+#undef  DEBUG_TYPE
 
 namespace {
 
@@ -92,10 +95,13 @@ namespace {
                           GlobalVariable *const load) {
     for (Function::iterator block = F.begin(); block != F.end(); block++) {
       int store_count = 0, load_count = 0;
+      BlocksCount++;
 
       // Iterate over basic blocks
       for (BasicBlock::iterator instruction = block->begin();
            instruction != block->end(); instruction++) {
+        InstCount++;
+
         // Increment the instruction type counters
         if (dyn_cast<StoreInst>(instruction)) {
           StoreInstCount++;
