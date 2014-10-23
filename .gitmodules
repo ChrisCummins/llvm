@@ -1,3 +1,6 @@
 [submodule "tools/clang"]
 	path = tools/clang
 	url = https://github.com/ChrisCummins/clang.git
+[submodule "projects/compiler-rt"]
+	path = projects/compiler-rt
+	url = https://github.com/ChrisCummins/compiler-rt.git
