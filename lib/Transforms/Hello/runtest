@@ -37,7 +37,7 @@ $clangxx $CFLAGS $src-pass.bc -o $src-pass
 
 echo "Bytecode modifications:"
 set +e
-diff $src-pass.ll $src.ll
+./test-pass
 set -e
 
 exit 0
