@@ -1,16 +1,4 @@
-//===- Hello.cpp - Example code from "Writing an LLVM Pass" ---------------===//
-//
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
-//
-//===----------------------------------------------------------------------===//
-//
-// This file implements two versions of the LLVM "Hello World" pass described
-// in docs/WritingAnLLVMPass.html
-//
-//===----------------------------------------------------------------------===//
+//===- MemoryCounter.cpp - Memory instrumentation -------------------------===//
 
 #include <vector>
 
@@ -28,13 +16,23 @@ using namespace llvm;
 
 #define DEBUG_TYPE "instructions"
 
-#define GLOBAL_STORE "$store$"
-#define GLOBAL_LOAD  "$load$"
+// Global variable names
+#define GLOBAL_STORE     "$store$"
+#define GLOBAL_LOAD      "$load$"
+#define GLOBAL_STORE_STR  GLOBAL_STORE"str"
+#define GLOBAL_LOAD_STR   GLOBAL_LOAD"str"
+#define RESULTS_STR      "$RESULTSLINE$"
 
 STATISTIC(StoreInstCount, "Number of instrumented STOREs");
 STATISTIC(LoadInstCount,  "Number of instrumented LOADs");
 
 namespace {
+
+  // Returns whether the current module has a main execution entry
+  // point or not.
+  bool hasMainMethod(Module &M) {
+    return M.getFunction("main");
+  }
 
   // Convert an int to 32 bit unsigned ConstantInt.
   ConstantInt *int2const32(Module &M, const int value) {
@@ -52,8 +50,14 @@ namespace {
                              /*Linkage=*/GlobalValue::ExternalLinkage,
                              /*Initializer=*/0, // has initializer, specified below
                              /*Name=*/name);
-    var->setAlignment(4);
-    var->setInitializer(int2const32(M, value));
+
+    // Only define the variable once. This prevents
+    // multiple-definition errors when linking multiple files which
+    // have been instrumented.
+    if (hasMainMethod(M)) {
+        var->setAlignment(4);
+        var->setInitializer(int2const32(M, value));
+    }
     return var;
   }
 
@@ -84,7 +88,7 @@ namespace {
       // Iterate over basic blocks
       for (BasicBlock::iterator instruction = block->begin();
            instruction != block->end(); instruction++) {
-        // Check the instruction type
+        // Increment the instruction type counters
         if (dyn_cast<StoreInst>(instruction)) {
           StoreInstCount++;
           store_count++;
@@ -114,27 +118,20 @@ namespace {
         = FunctionType::get(/*Result=*/IntegerType::get(M.getContext(), 32),
                             /*Params=*/FuncTy_6_args,
                             /*isVarArg=*/true);
-
     Function *func_printf = M.getFunction("printf");
     if (!func_printf) {
-      func_printf = Function::Create(
-          /*Type=*/FuncTy_6,
-          /*Linkage=*/GlobalValue::ExternalLinkage,
-          /*Name=*/"printf", &M); // (external, no body)
+      func_printf = Function::Create(/*Type=*/FuncTy_6,
+                                     /*Linkage=*/GlobalValue::ExternalLinkage,
+                                     /*Name=*/"printf", &M); // (external, no body)
       func_printf->setCallingConv(CallingConv::C);
     }
-    AttributeSet func_printf_PAL;
-    {
-      SmallVector<AttributeSet, 4> Attrs;
-      AttributeSet PAS;
-      {
-        AttrBuilder B;
-        PAS = AttributeSet::get(M.getContext(), ~0U, B);
-      }
+    AttributeSet func_printf_PAL, PAS;
+    SmallVector<AttributeSet, 4> Attrs;
+    AttrBuilder B;
+    PAS = AttributeSet::get(M.getContext(), ~0U, B);
 
-      Attrs.push_back(PAS);
-      func_printf_PAL = AttributeSet::get(M.getContext(), Attrs);
-    }
+    Attrs.push_back(PAS);
+    func_printf_PAL = AttributeSet::get(M.getContext(), Attrs);
     func_printf->setAttributes(func_printf_PAL);
 
     return func_printf;
@@ -151,7 +148,7 @@ namespace {
                              /*isConstant=*/true,
                              /*Linkage=*/GlobalValue::PrivateLinkage,
                              /*Initializer=*/0, // has initializer, specified below
-                             /*Name=*/"$RESULTSLINE$");
+                             /*Name=*/RESULTS_STR);
     str->setAlignment(1);
     Constant *const const_array_9
         = ConstantDataArray::getString(M.getContext(),
@@ -225,9 +222,9 @@ namespace {
         // add in the debug printouts.
         if (dyn_cast<ReturnInst>(terminator)) {
           printResultsLine(M, terminator);
-          printGVar32(M, terminator, store, GLOBAL_STORE"str",
+          printGVar32(M, terminator, store, GLOBAL_STORE_STR,
                       "Number of STORE instructions executed: %d\x0A", 43);
-          printGVar32(M, terminator, load, GLOBAL_LOAD"str",
+          printGVar32(M, terminator, load, GLOBAL_LOAD_STR,
                       "Number of LOAD instructions executed:  %d\x0A", 43);
         }
       }
@@ -238,10 +235,10 @@ namespace {
     }
   }
 
-  // Hello - The first implementation, without getAnalysisUsage.
-  struct Hello : public ModulePass {
+  // MemoryCounter - The first implementation, without getAnalysisUsage.
+  struct MemoryCounter : public ModulePass {
     static char ID; // Pass identification, replacement for typeid
-    Hello() : ModulePass(ID) {}
+    MemoryCounter() : ModulePass(ID) {}
 
     bool runOnModule(Module &M) override {
       // Add global load/store counters
@@ -255,12 +252,13 @@ namespace {
       }
 
       // Print instrumentation results
-      instrumentMain(M, store, load);
+      if (hasMainMethod(M))
+        instrumentMain(M, store, load);
 
       return true;
     }
   };
 }  // namespace
 
-char Hello::ID = 0;
-static RegisterPass<Hello> X("hello", "Hello World Pass");
+char MemoryCounter::ID = 0;
+static RegisterPass<MemoryCounter> X("memorycounter", "Memory Instrumentation Pass");

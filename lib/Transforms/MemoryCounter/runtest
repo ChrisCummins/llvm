@@ -9,7 +9,7 @@ opt=$prefix/$build/bin/opt
 clangxx=clang++
 llvmdis=llvm-dis
 
-module=Hello
+module=MemoryCounter
 module_path=$prefix/$build/lib/LLVM$module.so
 
 src=test
@@ -35,7 +35,6 @@ $llvmdis $src-pass.bc
 # Generate exec:
 $clangxx $CFLAGS $src-pass.bc -o $src-pass
 
-echo "Bytecode modifications:"
 set +e
 ./test-pass
 set -e
