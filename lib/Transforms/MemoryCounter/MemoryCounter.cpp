@@ -19,7 +19,6 @@ using namespace llvm;
 #define GLOBAL_LOAD      "$load$"
 #define GLOBAL_STORE_STR  GLOBAL_STORE"str"
 #define GLOBAL_LOAD_STR   GLOBAL_LOAD"str"
-#define RESULTS_STR      "$RESULTSLINE$"
 
 // Debug statistics
 #define DEBUG_TYPE ""
@@ -87,6 +86,32 @@ namespace {
     store->setAlignment(8);
   }
 
+  // Prepend "I" with instructions to update a global counter such that:
+  //     global_counter += counter;
+  //     counter = 0
+  void updateGlobalCounter(Module &M, Instruction *const I,
+                           GlobalVariable *const global_counter, int *const counter) {
+      if (*counter) {
+          addGVarInt64andConst64(M, I, global_counter, *counter);
+          *counter = 0;
+      }
+  }
+
+  // Prepend "I" with instructions to update both global counters.
+  void updateGlobalCounters(Module &M, Instruction *const I,
+                            GlobalVariable *const store, int *const store_count,
+                            GlobalVariable *const load, int *const load_count) {
+      updateGlobalCounter(M, I, store, store_count);
+      updateGlobalCounter(M, I, load, load_count);
+  }
+
+  Instruction *LLVMGetPreviousInstruction(Instruction *Instr) {
+    BasicBlock::iterator I = *Instr;
+    if (I == Instr->getParent()->begin())
+      return nullptr;
+    return --I;
+  }
+
   // Instrument a function so that it counts how many load and store
   // instructions there are in it, and adds those values to the global
   // load and store counters.
@@ -103,21 +128,19 @@ namespace {
         InstCount++;
 
         // Increment the instruction type counters
-        if (dyn_cast<StoreInst>(instruction)) {
+        if (isa<StoreInst>(instruction)) {
           StoreInstCount++;
           store_count++;
-        } else if (dyn_cast<LoadInst>(instruction)) {
+        } else if (isa<LoadInst>(instruction)) {
           LoadInstCount++;
           load_count++;
         }
       }
 
       // Add store and load instruction counters to global counters
-      TerminatorInst *const terminator = block->getTerminator();
-      if (store_count)
-        addGVarInt64andConst64(M, terminator, store, store_count);
-      if (load_count)
-        addGVarInt64andConst64(M, terminator, load, load_count);
+      Instruction *terminator = block->getTerminator();
+      updateGlobalCounters(M, terminator,
+                           store, &store_count, load, &load_count);
     }
   }
 
@@ -173,7 +196,7 @@ namespace {
                              /*isConstant=*/true,
                              /*Linkage=*/GlobalValue::PrivateLinkage,
                              /*Initializer=*/0, // has initializer, specified below
-                             /*Name=*/RESULTS_STR);
+                             /*Name=*/".$RESULTSLINE$");
     str->setAlignment(1);
     Constant *const const_array_9
         = ConstantDataArray::getString(M.getContext(),
@@ -190,7 +213,8 @@ namespace {
     callPrintf(M, const_ptr_12, i);
   }
 
-  // Print a global 64 bit integer variable.
+  // Prepend "i" with instructions to print the 64 bit unsigned
+  // integer variable "gvar".
   void printGVar64(Module &M, Instruction *const i,
                    GlobalVariable *const gvar, const char *name,
                    const char *fmt, size_t fmt_len) {
