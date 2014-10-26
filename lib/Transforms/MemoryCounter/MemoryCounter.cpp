@@ -139,6 +139,12 @@ namespace {
 
       // Add store and load instruction counters to global counters
       Instruction *terminator = block->getTerminator();
+
+      // If the terminator is unreachable, then instrument the
+      // preceding instruction.
+      if (isa<UnreachableInst>(terminator))
+        terminator = LLVMGetPreviousInstruction(terminator);
+
       updateGlobalCounters(M, terminator,
                            store, &store_count, load, &load_count);
     }
