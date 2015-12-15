@@ -14,6 +14,9 @@
 #ifndef LLVM_BITCODE_READERWRITER_H
 #define LLVM_BITCODE_READERWRITER_H
 
+#include "llvm/IR/DiagnosticInfo.h"
+#include "llvm/IR/FunctionInfo.h"
+#include "llvm/Support/Endian.h"
 #include "llvm/Support/ErrorOr.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include <memory>
@@ -28,19 +31,20 @@ namespace llvm {
   class raw_ostream;
 
   /// Read the header of the specified bitcode buffer and prepare for lazy
-  /// deserialization of function bodies.  If successful, this moves Buffer. On
+  /// deserialization of function bodies. If ShouldLazyLoadMetadata is true,
+  /// lazily load metadata as well. If successful, this moves Buffer. On
   /// error, this *does not* move Buffer.
-  ErrorOr<Module *> getLazyBitcodeModule(std::unique_ptr<MemoryBuffer> &&Buffer,
-                                         LLVMContext &Context);
+  ErrorOr<std::unique_ptr<Module>>
+  getLazyBitcodeModule(std::unique_ptr<MemoryBuffer> &&Buffer,
+                       LLVMContext &Context,
+                       bool ShouldLazyLoadMetadata = false);
 
-  /// getStreamedBitcodeModule - Read the header of the specified stream
-  /// and prepare for lazy deserialization and streaming of function bodies.
-  /// On error, this returns null, and fills in *ErrMsg with an error
-  /// description if ErrMsg is non-null.
-  Module *getStreamedBitcodeModule(const std::string &name,
-                                   DataStreamer *streamer,
-                                   LLVMContext &Context,
-                                   std::string *ErrMsg = nullptr);
+  /// Read the header of the specified stream and prepare for lazy
+  /// deserialization and streaming of function bodies.
+  ErrorOr<std::unique_ptr<Module>>
+  getStreamedBitcodeModule(StringRef Name,
+                           std::unique_ptr<DataStreamer> Streamer,
+                           LLVMContext &Context);
 
   /// Read the header of the specified bitcode buffer and extract just the
   /// triple information. If successful, this returns a string. On error, this
@@ -48,15 +52,60 @@ namespace llvm {
   std::string getBitcodeTargetTriple(MemoryBufferRef Buffer,
                                      LLVMContext &Context);
 
+  /// Read the header of the specified bitcode buffer and extract just the
+  /// producer string information. If successful, this returns a string. On
+  /// error, this returns "".
+  std::string getBitcodeProducerString(MemoryBufferRef Buffer,
+                                       LLVMContext &Context);
+
   /// Read the specified bitcode file, returning the module.
-  ErrorOr<Module *> parseBitcodeFile(MemoryBufferRef Buffer,
-                                     LLVMContext &Context);
+  ErrorOr<std::unique_ptr<Module>> parseBitcodeFile(MemoryBufferRef Buffer,
+                                                    LLVMContext &Context);
 
-  /// WriteBitcodeToFile - Write the specified module to the specified
-  /// raw output stream.  For streams where it matters, the given stream
-  /// should be in "binary" mode.
-  void WriteBitcodeToFile(const Module *M, raw_ostream &Out);
+  /// Check if the given bitcode buffer contains a function summary block.
+  bool hasFunctionSummary(MemoryBufferRef Buffer,
+                          DiagnosticHandlerFunction DiagnosticHandler);
 
+  /// Parse the specified bitcode buffer, returning the function info index.
+  /// If IsLazy is true, parse the entire function summary into
+  /// the index. Otherwise skip the function summary section, and only create
+  /// an index object with a map from function name to function summary offset.
+  /// The index is used to perform lazy function summary reading later.
+  ErrorOr<std::unique_ptr<FunctionInfoIndex>>
+  getFunctionInfoIndex(MemoryBufferRef Buffer,
+                       DiagnosticHandlerFunction DiagnosticHandler,
+                       bool IsLazy = false);
+
+  /// This method supports lazy reading of function summary data from the
+  /// combined index during function importing. When reading the combined index
+  /// file, getFunctionInfoIndex is first invoked with IsLazy=true.
+  /// Then this method is called for each function considered for importing,
+  /// to parse the summary information for the given function name into
+  /// the index.
+  std::error_code readFunctionSummary(
+      MemoryBufferRef Buffer, DiagnosticHandlerFunction DiagnosticHandler,
+      StringRef FunctionName, std::unique_ptr<FunctionInfoIndex> Index);
+
+  /// \brief Write the specified module to the specified raw output stream.
+  ///
+  /// For streams where it matters, the given stream should be in "binary"
+  /// mode.
+  ///
+  /// If \c ShouldPreserveUseListOrder, encode the use-list order for each \a
+  /// Value in \c M.  These will be reconstructed exactly when \a M is
+  /// deserialized.
+  ///
+  /// If \c EmitFunctionSummary, emit the function summary index (currently
+  /// for use in ThinLTO optimization).
+  void WriteBitcodeToFile(const Module *M, raw_ostream &Out,
+                          bool ShouldPreserveUseListOrder = false,
+                          bool EmitFunctionSummary = false);
+
+  /// Write the specified function summary index to the given raw output stream,
+  /// where it will be written in a new bitcode block. This is used when
+  /// writing the combined index file for ThinLTO.
+  void WriteFunctionSummaryToFile(const FunctionInfoIndex &Index,
+                                  raw_ostream &Out);
 
   /// isBitcodeWrapper - Return true if the given bytes are the magic bytes
   /// for an LLVM IR bitcode wrapper.
@@ -123,14 +172,8 @@ namespace llvm {
     // Must contain the header!
     if (BufEnd-BufPtr < KnownHeaderSize) return true;
 
-    unsigned Offset = ( BufPtr[OffsetField  ]        |
-                       (BufPtr[OffsetField+1] << 8)  |
-                       (BufPtr[OffsetField+2] << 16) |
-                       (BufPtr[OffsetField+3] << 24));
-    unsigned Size   = ( BufPtr[SizeField    ]        |
-                       (BufPtr[SizeField  +1] << 8)  |
-                       (BufPtr[SizeField  +2] << 16) |
-                       (BufPtr[SizeField  +3] << 24));
+    unsigned Offset = support::endian::read32le(&BufPtr[OffsetField]);
+    unsigned Size = support::endian::read32le(&BufPtr[SizeField]);
 
     // Verify that Offset+Size fits in the file.
     if (VerifyBufferSize && Offset+Size > unsigned(BufEnd-BufPtr))
@@ -141,31 +184,25 @@ namespace llvm {
   }
 
   const std::error_category &BitcodeErrorCategory();
-  enum class BitcodeError {
-    ConflictingMETADATA_KINDRecords,
-    CouldNotFindFunctionInStream,
-    ExpectedConstant,
-    InsufficientFunctionProtos,
-    InvalidBitcodeSignature,
-    InvalidBitcodeWrapperHeader,
-    InvalidConstantReference,
-    InvalidID, // A read identifier is not found in the table it should be in.
-    InvalidInstructionWithNoBB,
-    InvalidRecord, // A read record doesn't have the expected size or structure
-    InvalidTypeForValue, // Type read OK, but is invalid for its use
-    InvalidTYPETable,
-    InvalidType,    // We were unable to read a type
-    MalformedBlock, // We are unable to advance in the stream.
-    MalformedGlobalInitializerSet,
-    InvalidMultipleBlocks, // We found multiple blocks of a kind that should
-                           // have only one
-    NeverResolvedValueFoundInFunction,
-    NeverResolvedFunctionFromBlockAddress,
-    InvalidValue // Invalid version, inst number, attr number, etc
-  };
+  enum class BitcodeError { InvalidBitcodeSignature = 1, CorruptedBitcode };
   inline std::error_code make_error_code(BitcodeError E) {
     return std::error_code(static_cast<int>(E), BitcodeErrorCategory());
   }
+
+  class BitcodeDiagnosticInfo : public DiagnosticInfo {
+    const Twine &Msg;
+    std::error_code EC;
+
+  public:
+    BitcodeDiagnosticInfo(std::error_code EC, DiagnosticSeverity Severity,
+                          const Twine &Msg);
+    void print(DiagnosticPrinter &DP) const override;
+    std::error_code getError() const { return EC; }
+
+    static bool classof(const DiagnosticInfo *DI) {
+      return DI->getKind() == DK_Bitcode;
+    }
+  };
 
 } // End llvm namespace
 

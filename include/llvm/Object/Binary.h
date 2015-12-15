@@ -28,8 +28,8 @@ namespace object {
 
 class Binary {
 private:
-  Binary() LLVM_DELETED_FUNCTION;
-  Binary(const Binary &other) LLVM_DELETED_FUNCTION;
+  Binary() = delete;
+  Binary(const Binary &other) = delete;
 
   unsigned int TypeID;
 
@@ -41,7 +41,9 @@ protected:
   enum {
     ID_Archive,
     ID_MachOUniversalBinary,
-    ID_IR, // LLVM IR
+    ID_COFFImportFile,
+    ID_IR,            // LLVM IR
+    ID_FunctionIndex, // Function summary index
 
     // Object and children.
     ID_StartObjects,
@@ -113,9 +115,15 @@ public:
     return TypeID == ID_COFF;
   }
 
+  bool isCOFFImportFile() const {
+    return TypeID == ID_COFFImportFile;
+  }
+
   bool isIR() const {
     return TypeID == ID_IR;
   }
+
+  bool isFunctionIndex() const { return TypeID == ID_FunctionIndex; }
 
   bool isLittleEndian() const {
     return !(TypeID == ID_ELF32B || TypeID == ID_ELF64B ||
@@ -139,9 +147,10 @@ public:
   OwningBinary(OwningBinary<T>&& Other);
   OwningBinary<T> &operator=(OwningBinary<T> &&Other);
 
-  std::unique_ptr<T> &getBinary();
-  const std::unique_ptr<T> &getBinary() const;
-  std::unique_ptr<MemoryBuffer> &getBuffer();
+  std::pair<std::unique_ptr<T>, std::unique_ptr<MemoryBuffer>> takeBinary();
+
+  T* getBinary();
+  const T* getBinary() const;
 };
 
 template <typename T>
@@ -162,18 +171,18 @@ OwningBinary<T> &OwningBinary<T>::operator=(OwningBinary &&Other) {
   return *this;
 }
 
-template <typename T> std::unique_ptr<T> &OwningBinary<T>::getBinary() {
-  return Bin;
+template <typename T>
+std::pair<std::unique_ptr<T>, std::unique_ptr<MemoryBuffer>>
+OwningBinary<T>::takeBinary() {
+  return std::make_pair(std::move(Bin), std::move(Buf));
 }
 
-template <typename T>
-const std::unique_ptr<T> &OwningBinary<T>::getBinary() const {
-  return Bin;
+template <typename T> T* OwningBinary<T>::getBinary() {
+  return Bin.get();
 }
 
-template <typename T>
-std::unique_ptr<MemoryBuffer> &OwningBinary<T>::getBuffer() {
-  return Buf;
+template <typename T> const T* OwningBinary<T>::getBinary() const {
+  return Bin.get();
 }
 
 ErrorOr<OwningBinary<Binary>> createBinary(StringRef Path);

@@ -15,12 +15,12 @@ data files.
 COMMANDS
 --------
 
-* `merge <profdata_merge_>`_
-* `show <profdata_show_>`_
+* :ref:`merge <profdata-merge>`
+* :ref:`show <profdata-show>`
 
 .. program:: llvm-profdata merge
 
-.. _profdata_merge:
+.. _profdata-merge:
 
 MERGE
 -----
@@ -49,9 +49,35 @@ OPTIONS
  Specify the output file name.  *Output* cannot be ``-`` as the resulting
  indexed profile data can't be written to standard output.
 
+.. option:: -instr (default)
+
+ Specify that the input profile is an instrumentation-based profile.
+
+.. option:: -sample
+
+ Specify that the input profile is a sample-based profile.
+ 
+ The format of the generated file can be generated in one of three ways:
+
+ .. option:: -binary (default)
+
+ Emit the profile using a binary encoding. For instrumentation-based profile
+ the output format is the indexed binary format. 
+
+ .. option:: -text
+
+ Emit the profile in text mode. This option can also be used with both
+ sample-based and instrumentation-based profile. When this option is used
+ the profile will be dumped in the text format that is parsable by the profile
+ reader.
+
+ .. option:: -gcc
+
+ Emit the profile using GCC's gcov format (Not yet supported).
+
 .. program:: llvm-profdata show
 
-.. _profdata_show:
+.. _profdata-show:
 
 SHOW
 ----
@@ -94,6 +120,21 @@ OPTIONS
 
  Specify the output file name.  If *output* is ``-`` or it isn't specified,
  then the output is sent to standard output.
+
+.. option:: -instr (default)
+
+ Specify that the input profile is an instrumentation-based profile.
+
+.. option:: -text
+
+ Instruct the profile dumper to show profile counts in the text format of the
+ instrumentation-based profile data representation. By default, the profile
+ information is dumped in a more human readable form (also in text) with
+ annotations.
+
+.. option:: -sample
+
+ Specify that the input profile is a sample-based profile.
 
 EXIT STATUS
 -----------

@@ -19,17 +19,22 @@
 //===          is guaranteed to work on *all* Win32 variants.
 //===----------------------------------------------------------------------===//
 
+#ifndef LLVM_SUPPORT_WINDOWSSUPPORT_H
+#define LLVM_SUPPORT_WINDOWSSUPPORT_H
+
 // mingw-w64 tends to define it as 0x0502 in its headers.
 #undef _WIN32_WINNT
 #undef _WIN32_IE
 
-// Require at least Windows XP(5.1) API.
-#define _WIN32_WINNT 0x0501
-#define _WIN32_IE    0x0600 // MinGW at it again.
+// Require at least Windows 7 API.
+#define _WIN32_WINNT 0x0601
+#define _WIN32_IE    0x0800 // MinGW at it again. FIXME: verify if still needed.
 #define WIN32_LEAN_AND_MEAN
 
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/Config/config.h" // Get build system configuration settings
 #include "llvm/Support/Compiler.h"
 #include <system_error>
@@ -43,13 +48,16 @@ inline bool MakeErrMsg(std::string* ErrMsg, const std::string& prefix) {
   if (!ErrMsg)
     return true;
   char *buffer = NULL;
+  DWORD LastError = GetLastError();
   DWORD R = FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER |
-                          FORMAT_MESSAGE_FROM_SYSTEM,
-                          NULL, GetLastError(), 0, (LPSTR)&buffer, 1, NULL);
+                          FORMAT_MESSAGE_FROM_SYSTEM |
+                          FORMAT_MESSAGE_MAX_WIDTH_MASK,
+                          NULL, LastError, 0, (LPSTR)&buffer, 1, NULL);
   if (R)
-    *ErrMsg = prefix + buffer;
+    *ErrMsg = prefix + ": " + buffer;
   else
-    *ErrMsg = prefix + "Unknown error";
+    *ErrMsg = prefix + ": Unknown error";
+  *ErrMsg += " (0x" + llvm::utohexstr(LastError) + ")";
 
   LocalFree(buffer);
   return R != 0;
@@ -88,7 +96,7 @@ public:
   }
 
   // True if Handle is valid.
-  LLVM_EXPLICIT operator bool() const {
+  explicit operator bool() const {
     return HandleTraits::IsValid(Handle) ? true : false;
   }
 
@@ -162,6 +170,11 @@ c_str(SmallVectorImpl<T> &str) {
 }
 
 namespace sys {
+namespace path {
+std::error_code widenPath(const Twine &Path8,
+                          SmallVectorImpl<wchar_t> &Path16);
+} // end namespace path
+
 namespace windows {
 std::error_code UTF8ToUTF16(StringRef utf8, SmallVectorImpl<wchar_t> &utf16);
 std::error_code UTF16ToUTF8(const wchar_t *utf16, size_t utf16_len,
@@ -172,3 +185,5 @@ std::error_code UTF16ToCurCP(const wchar_t *utf16, size_t utf16_len,
 } // end namespace windows
 } // end namespace sys
 } // end namespace llvm.
+
+#endif

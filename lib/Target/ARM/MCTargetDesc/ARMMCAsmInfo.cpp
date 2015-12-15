@@ -12,15 +12,14 @@
 //===----------------------------------------------------------------------===//
 
 #include "ARMMCAsmInfo.h"
-#include "llvm/Support/CommandLine.h"
 #include "llvm/ADT/Triple.h"
+#include "llvm/Support/CommandLine.h"
 
 using namespace llvm;
 
 void ARMMCAsmInfoDarwin::anchor() { }
 
-ARMMCAsmInfoDarwin::ARMMCAsmInfoDarwin(StringRef TT) {
-  Triple TheTriple(TT);
+ARMMCAsmInfoDarwin::ARMMCAsmInfoDarwin(const Triple &TheTriple) {
   if ((TheTriple.getArch() == Triple::armeb) ||
       (TheTriple.getArch() == Triple::thumbeb))
     IsLittleEndian = false;
@@ -34,15 +33,16 @@ ARMMCAsmInfoDarwin::ARMMCAsmInfoDarwin(StringRef TT) {
   SupportsDebugInformation = true;
 
   // Exceptions handling
-  ExceptionsType = ExceptionHandling::SjLj;
+  ExceptionsType = TheTriple.isOSDarwin() && !TheTriple.isWatchOS()
+                       ? ExceptionHandling::SjLj
+                       : ExceptionHandling::DwarfCFI;
 
   UseIntegratedAssembler = true;
 }
 
 void ARMELFMCAsmInfo::anchor() { }
 
-ARMELFMCAsmInfo::ARMELFMCAsmInfo(StringRef TT) {
-  Triple TheTriple(TT);
+ARMELFMCAsmInfo::ARMELFMCAsmInfo(const Triple &TheTriple) {
   if ((TheTriple.getArch() == Triple::armeb) ||
       (TheTriple.getArch() == Triple::thumbeb))
     IsLittleEndian = false;
@@ -59,6 +59,7 @@ ARMELFMCAsmInfo::ARMELFMCAsmInfo(StringRef TT) {
 
   // Exceptions handling
   switch (TheTriple.getOS()) {
+  case Triple::Bitrig:
   case Triple::NetBSD:
     ExceptionsType = ExceptionHandling::DwarfCFI;
     break;
@@ -89,6 +90,7 @@ ARMCOFFMCAsmInfoMicrosoft::ARMCOFFMCAsmInfoMicrosoft() {
   AlignmentIsInBytes = false;
 
   PrivateGlobalPrefix = "$M";
+  PrivateLabelPrefix = "$M";
 }
 
 void ARMCOFFMCAsmInfoGNU::anchor() { }
@@ -101,6 +103,7 @@ ARMCOFFMCAsmInfoGNU::ARMCOFFMCAsmInfoGNU() {
   Code16Directive = ".code\t16";
   Code32Directive = ".code\t32";
   PrivateGlobalPrefix = ".L";
+  PrivateLabelPrefix = ".L";
 
   SupportsDebugInformation = true;
   ExceptionsType = ExceptionHandling::None;

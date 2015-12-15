@@ -1,4 +1,4 @@
-//===-- ARMMachineFuctionInfo.h - ARM machine function info -----*- C++ -*-===//
+//===-- ARMMachineFunctionInfo.h - ARM machine function info ----*- C++ -*-===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -16,10 +16,10 @@
 
 #include "ARMSubtarget.h"
 #include "llvm/ADT/BitVector.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetRegisterInfo.h"
-#include "llvm/ADT/DenseMap.h"
 
 namespace llvm {
 
@@ -52,7 +52,7 @@ class ARMFunctionInfo : public MachineFunctionInfo {
   unsigned ReturnRegsCount;
 
   /// HasStackFrame - True if this function has a stack frame. Set by
-  /// processFunctionBeforeCalleeSavedScan().
+  /// determineCalleeSaves().
   bool HasStackFrame;
 
   /// RestoreSPFromFP - True if epilogue should restore SP from FP. Set by
@@ -86,6 +86,7 @@ class ARMFunctionInfo : public MachineFunctionInfo {
   /// areas.
   unsigned GPRCS1Size;
   unsigned GPRCS2Size;
+  unsigned DPRCSAlignGapSize;
   unsigned DPRCSSize;
 
   /// NumAlignedDPRCS2Regs - The number of callee-saved DPRs that are saved in
@@ -96,10 +97,6 @@ class ARMFunctionInfo : public MachineFunctionInfo {
   /// behave like any other frame index in the aligned stack frame.  These
   /// registers also aren't included in DPRCSSize above.
   unsigned NumAlignedDPRCS2Regs;
-
-  /// JumpTableUId - Unique id for jumptables.
-  ///
-  unsigned JumpTableUId;
 
   unsigned PICLabelUId;
 
@@ -112,11 +109,6 @@ class ARMFunctionInfo : public MachineFunctionInfo {
   /// CPEClones - Track constant pool entries clones created by Constant Island
   /// pass.
   DenseMap<unsigned, unsigned> CPEClones;
-
-  /// GlobalBaseReg - keeps track of the virtual register initialized for
-  /// use as the global base register. This is used for PIC in some PIC
-  /// relocation models.
-  unsigned GlobalBaseReg;
 
   /// ArgumentStackSize - amount of bytes on stack consumed by the arguments
   /// being passed on the stack
@@ -134,10 +126,9 @@ public:
     RestoreSPFromFP(false),
     LRSpilledForFarJump(false),
     FramePtrSpillOffset(0), GPRCS1Offset(0), GPRCS2Offset(0), DPRCSOffset(0),
-    GPRCS1Size(0), GPRCS2Size(0), DPRCSSize(0),
-    NumAlignedDPRCS2Regs(0),
-    JumpTableUId(0), PICLabelUId(0),
-    VarArgsFrameIndex(0), HasITBlocks(false), GlobalBaseReg(0) {}
+    GPRCS1Size(0), GPRCS2Size(0), DPRCSAlignGapSize(0), DPRCSSize(0),
+    NumAlignedDPRCS2Regs(0), PICLabelUId(0),
+    VarArgsFrameIndex(0), HasITBlocks(false) {}
 
   explicit ARMFunctionInfo(MachineFunction &MF);
 
@@ -148,11 +139,7 @@ public:
   unsigned getStoredByValParamsPadding() const { return StByValParamsPadding; }
   void setStoredByValParamsPadding(unsigned p) { StByValParamsPadding = p; }
 
-  unsigned getArgRegsSaveSize(unsigned Align = 0) const {
-    if (!Align)
-      return ArgRegsSaveSize;
-    return (ArgRegsSaveSize + Align - 1) & ~(Align - 1);
-  }
+  unsigned getArgRegsSaveSize() const { return ArgRegsSaveSize; }
   void setArgRegsSaveSize(unsigned s) { ArgRegsSaveSize = s; }
 
   unsigned getReturnRegsCount() const { return ReturnRegsCount; }
@@ -183,22 +170,16 @@ public:
 
   unsigned getGPRCalleeSavedArea1Size() const { return GPRCS1Size; }
   unsigned getGPRCalleeSavedArea2Size() const { return GPRCS2Size; }
+  unsigned getDPRCalleeSavedGapSize() const   { return DPRCSAlignGapSize; }
   unsigned getDPRCalleeSavedAreaSize()  const { return DPRCSSize; }
 
   void setGPRCalleeSavedArea1Size(unsigned s) { GPRCS1Size = s; }
   void setGPRCalleeSavedArea2Size(unsigned s) { GPRCS2Size = s; }
+  void setDPRCalleeSavedGapSize(unsigned s)   { DPRCSAlignGapSize = s; }
   void setDPRCalleeSavedAreaSize(unsigned s)  { DPRCSSize = s; }
 
   unsigned getArgumentStackSize() const { return ArgumentStackSize; }
   void setArgumentStackSize(unsigned size) { ArgumentStackSize = size; }
-
-  unsigned createJumpTableUId() {
-    return JumpTableUId++;
-  }
-
-  unsigned getNumJumpTables() const {
-    return JumpTableUId;
-  }
 
   void initPICLabelUId(unsigned UId) {
     PICLabelUId = UId;
@@ -217,9 +198,6 @@ public:
 
   bool hasITBlocks() const { return HasITBlocks; }
   void setHasITBlocks(bool h) { HasITBlocks = h; }
-
-  unsigned getGlobalBaseReg() const { return GlobalBaseReg; }
-  void setGlobalBaseReg(unsigned Reg) { GlobalBaseReg = Reg; }
 
   void recordCPEClone(unsigned CPIdx, unsigned CPCloneIdx) {
     if (!CPEClones.insert(std::make_pair(CPCloneIdx, CPIdx)).second)

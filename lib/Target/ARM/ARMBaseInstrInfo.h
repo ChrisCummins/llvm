@@ -86,6 +86,18 @@ protected:
                             RegSubRegPair &BaseReg,
                             RegSubRegPairAndIdx &InsertedReg) const override;
 
+  /// Commutes the operands in the given instruction.
+  /// The commutable operands are specified by their indices OpIdx1 and OpIdx2.
+  ///
+  /// Do not call this method for a non-commutable instruction or for
+  /// non-commutable pair of operand indices OpIdx1 and OpIdx2.
+  /// Even though the instruction is commutable, the method may still
+  /// fail to commute the operands, null pointer is returned in such cases.
+  MachineInstr *commuteInstructionImpl(MachineInstr *MI,
+                                       bool NewMI,
+                                       unsigned OpIdx1,
+                                       unsigned OpIdx2) const override;
+
 public:
   // Return whether the target has an explicit NOP encoding.
   bool hasNOP() const;
@@ -116,8 +128,7 @@ public:
                      bool AllowModify = false) const override;
   unsigned RemoveBranch(MachineBasicBlock &MBB) const override;
   unsigned InsertBranch(MachineBasicBlock &MBB, MachineBasicBlock *TBB,
-                        MachineBasicBlock *FBB,
-                        const SmallVectorImpl<MachineOperand> &Cond,
+                        MachineBasicBlock *FBB, ArrayRef<MachineOperand> Cond,
                         DebugLoc DL) const override;
 
   bool
@@ -133,10 +144,10 @@ public:
   }
 
   bool PredicateInstruction(MachineInstr *MI,
-                    const SmallVectorImpl<MachineOperand> &Pred) const override;
+                    ArrayRef<MachineOperand> Pred) const override;
 
-  bool SubsumesPredicate(const SmallVectorImpl<MachineOperand> &Pred1,
-                   const SmallVectorImpl<MachineOperand> &Pred2) const override;
+  bool SubsumesPredicate(ArrayRef<MachineOperand> Pred1,
+                         ArrayRef<MachineOperand> Pred2) const override;
 
   bool DefinesPredicate(MachineInstr *MI,
                         std::vector<MachineOperand> &Pred) const override;
@@ -189,9 +200,6 @@ public:
   MachineInstr *duplicate(MachineInstr *Orig,
                           MachineFunction &MF) const override;
 
-  MachineInstr *commuteInstruction(MachineInstr*,
-                                   bool=false) const override;
-
   const MachineInstrBuilder &AddDReg(MachineInstrBuilder &MIB, unsigned Reg,
                                      unsigned SubIdx, unsigned State,
                                      const TargetRegisterInfo *TRI) const;
@@ -225,15 +233,15 @@ public:
 
   bool isProfitableToIfCvt(MachineBasicBlock &MBB,
                            unsigned NumCycles, unsigned ExtraPredCycles,
-                           const BranchProbability &Probability) const override;
+                           BranchProbability Probability) const override;
 
   bool isProfitableToIfCvt(MachineBasicBlock &TMBB, unsigned NumT,
                            unsigned ExtraT, MachineBasicBlock &FMBB,
                            unsigned NumF, unsigned ExtraF,
-                           const BranchProbability &Probability) const override;
+                           BranchProbability Probability) const override;
 
   bool isProfitableToDupForIfCvt(MachineBasicBlock &MBB, unsigned NumCycles,
-                          const BranchProbability &Probability) const override {
+                                 BranchProbability Probability) const override {
     return NumCycles == 1;
   }
 
@@ -261,7 +269,9 @@ public:
                      unsigned &TrueOp, unsigned &FalseOp,
                      bool &Optimizable) const override;
 
-  MachineInstr *optimizeSelect(MachineInstr *MI, bool) const override;
+  MachineInstr *optimizeSelect(MachineInstr *MI,
+                               SmallPtrSetImpl<MachineInstr *> &SeenMIs,
+                               bool) const override;
 
   /// FoldImmediate - 'Reg' is known to be defined by a move immediate
   /// instruction, try to fold the immediate into the use instruction.
@@ -288,12 +298,6 @@ public:
                                       const TargetRegisterInfo*) const override;
   void breakPartialRegDependency(MachineBasicBlock::iterator, unsigned,
                                  const TargetRegisterInfo *TRI) const override;
-
-  void
-  getUnconditionalBranch(MCInst &Branch,
-                         const MCSymbolRefExpr *BranchTarget) const override;
-
-  void getTrap(MCInst &MI) const override;
 
   /// Get the number of addresses by LDM or VLDM or zero for unknown.
   unsigned getNumLDMAddresses(const MachineInstr *MI) const;
@@ -332,12 +336,12 @@ private:
   int getInstrLatency(const InstrItineraryData *ItinData,
                       SDNode *Node) const override;
 
-  bool hasHighOperandLatency(const InstrItineraryData *ItinData,
+  bool hasHighOperandLatency(const TargetSchedModel &SchedModel,
                              const MachineRegisterInfo *MRI,
                              const MachineInstr *DefMI, unsigned DefIdx,
                              const MachineInstr *UseMI,
                              unsigned UseIdx) const override;
-  bool hasLowDefLatency(const InstrItineraryData *ItinData,
+  bool hasLowDefLatency(const TargetSchedModel &SchedModel,
                         const MachineInstr *DefMI,
                         unsigned DefIdx) const override;
 
@@ -347,6 +351,8 @@ private:
 
   virtual void expandLoadStackGuard(MachineBasicBlock::iterator MI,
                                     Reloc::Model RM) const = 0;
+
+  void expandMEMCPY(MachineBasicBlock::iterator) const;
 
 private:
   /// Modeling special VFP / NEON fp MLA / MLS hazards.
@@ -443,7 +449,7 @@ static inline bool isPushOpcode(int Opc) {
 /// register by reference.
 ARMCC::CondCodes getInstrPredicate(const MachineInstr *MI, unsigned &PredReg);
 
-int getMatchingCondBranchOpcode(int Opc);
+unsigned getMatchingCondBranchOpcode(unsigned Opc);
 
 /// Determine if MI can be folded into an ARM MOVCC instruction, and return the
 /// opcode of the SSA instruction representing the conditional MI.

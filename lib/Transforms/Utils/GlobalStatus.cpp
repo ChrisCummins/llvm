@@ -49,6 +49,10 @@ bool llvm::isSafeToDestroyConstant(const Constant *C) {
 
 static bool analyzeGlobalAux(const Value *V, GlobalStatus &GS,
                              SmallPtrSetImpl<const PHINode *> &PhiUsers) {
+  if (const GlobalVariable *GV = dyn_cast<GlobalVariable>(V))
+    if (GV->isExternallyInitialized())
+      GS.StoredType = GlobalStatus::StoredOnce;
+
   for (const Use &U : V->uses()) {
     const User *UR = U.getUser();
     if (const ConstantExpr *CE = dyn_cast<ConstantExpr>(UR)) {
@@ -133,7 +137,7 @@ static bool analyzeGlobalAux(const Value *V, GlobalStatus &GS,
       } else if (const PHINode *PN = dyn_cast<PHINode>(I)) {
         // PHI nodes we can check just like select or GEP instructions, but we
         // have to be careful about infinite recursion.
-        if (PhiUsers.insert(PN)) // Not already visited.
+        if (PhiUsers.insert(PN).second) // Not already visited.
           if (analyzeGlobalAux(I, GS, PhiUsers))
             return true;
       } else if (isa<CmpInst>(I)) {
@@ -150,7 +154,7 @@ static bool analyzeGlobalAux(const Value *V, GlobalStatus &GS,
         if (MSI->isVolatile())
           return true;
         GS.StoredType = GlobalStatus::Stored;
-      } else if (ImmutableCallSite C = I) {
+      } else if (auto C = ImmutableCallSite(I)) {
         if (!C.isCallee(&U))
           return true;
         GS.IsLoaded = true;

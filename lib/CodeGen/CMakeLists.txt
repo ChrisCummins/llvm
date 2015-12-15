@@ -1,3 +1,8 @@
+set(system_libs)
+if(CMAKE_HOST_UNIX AND LLVM_ENABLE_THREADS AND HAVE_LIBPTHREAD)
+  set(system_libs ${system_libs} pthread)
+endif()
+
 add_llvm_library(LLVMCodeGen
   AggressiveAntiDepBreaker.cpp
   AllocationOrder.cpp
@@ -9,6 +14,7 @@ add_llvm_library(LLVMCodeGen
   CallingConvLower.cpp
   CodeGen.cpp
   CodeGenPrepare.cpp
+  CoreCLRGC.cpp
   CriticalAntiDepBreaker.cpp
   DFAPacketizer.cpp
   DeadMachineInstructionElim.cpp
@@ -19,15 +25,19 @@ add_llvm_library(LLVMCodeGen
   ExecutionDepsFix.cpp
   ExpandISelPseudos.cpp
   ExpandPostRAPseudos.cpp
+  FaultMaps.cpp
+  FuncletLayout.cpp
   GCMetadata.cpp
   GCMetadataPrinter.cpp
+  GCRootLowering.cpp
   GCStrategy.cpp
   GlobalMerge.cpp
   IfConversion.cpp
+  ImplicitNullChecks.cpp
   InlineSpiller.cpp
   InterferenceCache.cpp
+  InterleavedAccessPass.cpp
   IntrinsicLowering.cpp
-  JumpInstrTables.cpp
   LLVMTargetMachine.cpp
   LatencyPriorityQueue.cpp
   LexicalScopes.cpp
@@ -70,10 +80,13 @@ add_llvm_library(LLVMCodeGen
   MachineSink.cpp
   MachineTraceMetrics.cpp
   MachineVerifier.cpp
+  MIRPrinter.cpp
+  MIRPrintingPass.cpp
   OcamlGC.cpp
   OptimizePHIs.cpp
   PHIElimination.cpp
   PHIEliminationUtils.cpp
+  ParallelCG.cpp
   Passes.cpp
   PeepholeOptimizer.cpp
   PostRASchedulerList.cpp
@@ -93,17 +106,19 @@ add_llvm_library(LLVMCodeGen
   ScheduleDAGInstrs.cpp
   ScheduleDAGPrinter.cpp
   ScoreboardHazardRecognizer.cpp
+  ShrinkWrap.cpp
   ShadowStackGC.cpp
+  ShadowStackGCLowering.cpp
   SjLjEHPrepare.cpp
   SlotIndexes.cpp
   SpillPlacement.cpp
-  Spiller.cpp
   SplitKit.cpp
   StackColoring.cpp
   StackProtector.cpp
   StackSlotColoring.cpp
   StackMapLivenessAnalysis.cpp
   StackMaps.cpp
+  StatepointExampleGC.cpp
   TailDuplication.cpp
   TargetFrameLoweringImpl.cpp
   TargetInstrInfo.cpp
@@ -115,9 +130,17 @@ add_llvm_library(LLVMCodeGen
   TwoAddressInstructionPass.cpp
   UnreachableBlockElim.cpp
   VirtRegMap.cpp
+  WinEHPrepare.cpp
+
+  ADDITIONAL_HEADER_DIRS
+  ${LLVM_MAIN_INCLUDE_DIR}/llvm/CodeGen
+  ${LLVM_MAIN_INCLUDE_DIR}/llvm/CodeGen/PBQP
+
+  LINK_LIBS ${system_libs}
   )
 
 add_dependencies(LLVMCodeGen intrinsics_gen)
 
 add_subdirectory(SelectionDAG)
 add_subdirectory(AsmPrinter)
+add_subdirectory(MIRParser)

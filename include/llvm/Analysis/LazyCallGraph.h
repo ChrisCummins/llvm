@@ -46,11 +46,11 @@
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/PassManager.h"
 #include "llvm/Support/Allocator.h"
 #include <iterator>
 
 namespace llvm {
-class ModuleAnalysisManager;
 class PreservedAnalyses;
 class raw_ostream;
 
@@ -190,7 +190,7 @@ public:
 
     Function &getFunction() const {
       return F;
-    };
+    }
 
     iterator begin() const {
       return iterator(*G, Callees.begin(), Callees.end());
@@ -235,7 +235,7 @@ public:
     parent_iterator parent_end() const { return ParentSCCs.end(); }
 
     iterator_range<parent_iterator> parents() const {
-      return iterator_range<parent_iterator>(parent_begin(), parent_end());
+      return make_range(parent_begin(), parent_end());
     }
 
     /// \brief Test if this SCC is a parent of \a C.
@@ -251,6 +251,12 @@ public:
 
     /// \brief Test if this SCC is a descendant of \a C.
     bool isDescendantOf(const SCC &C) const;
+
+    /// \brief Short name useful for debugging or logging.
+    ///
+    /// We use the name of the first function in the SCC to name the SCC for
+    /// the purposes of debugging and logging.
+    StringRef getName() const { return (*begin())->getFunction().getName(); }
 
     ///@{
     /// \name Mutation API
@@ -404,8 +410,7 @@ public:
   }
 
   iterator_range<postorder_scc_iterator> postorder_sccs() {
-    return iterator_range<postorder_scc_iterator>(postorder_scc_begin(),
-                                                  postorder_scc_end());
+    return make_range(postorder_scc_begin(), postorder_scc_end());
   }
 
   /// \brief Lookup a function in the graph which has already been scanned and
@@ -537,11 +542,13 @@ public:
 
   static void *ID() { return (void *)&PassID; }
 
+  static StringRef name() { return "Lazy CallGraph Analysis"; }
+
   /// \brief Compute the \c LazyCallGraph for the module \c M.
   ///
   /// This just builds the set of entry points to the call graph. The rest is
   /// built lazily as it is walked.
-  LazyCallGraph run(Module *M) { return LazyCallGraph(*M); }
+  LazyCallGraph run(Module &M) { return LazyCallGraph(M); }
 
 private:
   static char PassID;
@@ -556,7 +563,7 @@ class LazyCallGraphPrinterPass {
 public:
   explicit LazyCallGraphPrinterPass(raw_ostream &OS);
 
-  PreservedAnalyses run(Module *M, ModuleAnalysisManager *AM);
+  PreservedAnalyses run(Module &M, ModuleAnalysisManager *AM);
 
   static StringRef name() { return "LazyCallGraphPrinterPass"; }
 };

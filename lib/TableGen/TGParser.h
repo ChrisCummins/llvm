@@ -55,7 +55,7 @@ namespace llvm {
 class TGParser {
   TGLexer Lex;
   std::vector<std::vector<LetRecord> > LetStack;
-  std::map<std::string, MultiClass*> MultiClasses;
+  std::map<std::string, std::unique_ptr<MultiClass>> MultiClasses;
 
   /// Loops - Keep track of any foreach loops we are within.
   ///
@@ -135,15 +135,13 @@ private:  // Parser methods.
   bool ParseObject(MultiClass *MC);
   bool ParseClass();
   bool ParseMultiClass();
-  Record *InstantiateMulticlassDef(MultiClass &MC,
-                                   Record *DefProto,
-                                   Init *&DefmPrefix,
-                                   SMRange DefmPrefixRange);
-  bool ResolveMulticlassDefArgs(MultiClass &MC,
-                                Record *DefProto,
-                                SMLoc DefmPrefixLoc,
-                                SMLoc SubClassLoc,
-                                const std::vector<Init *> &TArgs,
+  Record *InstantiateMulticlassDef(MultiClass &MC, Record *DefProto,
+                                   Init *&DefmPrefix, SMRange DefmPrefixRange,
+                                   ArrayRef<Init *> TArgs,
+                                   std::vector<Init *> &TemplateVals);
+  bool ResolveMulticlassDefArgs(MultiClass &MC, Record *DefProto,
+                                SMLoc DefmPrefixLoc, SMLoc SubClassLoc,
+                                ArrayRef<Init *> TArgs,
                                 std::vector<Init *> &TemplateVals,
                                 bool DeleteArgs);
   bool ResolveMulticlassDef(MultiClass &MC,

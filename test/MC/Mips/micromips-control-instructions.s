@@ -9,6 +9,17 @@
 #------------------------------------------------------------------------------
 # Little endian
 #------------------------------------------------------------------------------
+# CHECK-EL:    sdbbp                      # encoding: [0x00,0x00,0x7c,0xdb]
+# CHECK-EL:    sdbbp 34                   # encoding: [0x22,0x00,0x7c,0xdb]
+# CHECK-EL-NOT:    .set push
+# CHECK-EL-NOT:    .set mips32r2
+# CHECK-EL:    rdhwr $5, $29              # encoding: [0xbd,0x00,0x3c,0x6b]
+# CHECK-EL-NOT:    .set pop
+# CHECK-EL:    cache 1, 8($5)             # encoding: [0x25,0x20,0x08,0x60]
+# CHECK-EL:    pref 1, 8($5)              # encoding: [0x25,0x60,0x08,0x20]
+# CHECK-EL:    ssnop                      # encoding: [0x00,0x00,0x00,0x08]
+# CHECK-EL:    ehb                        # encoding: [0x00,0x00,0x00,0x18]
+# CHECK-EL:    pause                      # encoding: [0x00,0x00,0x00,0x28]
 # CHECK-EL:    break                      # encoding: [0x00,0x00,0x07,0x00]
 # CHECK-EL:    break 7                    # encoding: [0x07,0x00,0x07,0x00]
 # CHECK-EL:    break 7, 5                 # encoding: [0x07,0x00,0x47,0x01]
@@ -28,9 +39,29 @@
 # CHECK-EL:    tlbr                       # encoding: [0x00,0x00,0x7c,0x13]
 # CHECK-EL:    tlbwi                      # encoding: [0x00,0x00,0x7c,0x23]
 # CHECK-EL:    tlbwr                      # encoding: [0x00,0x00,0x7c,0x33]
+# CHECK-EL:    prefe 1, 8($5)             # encoding: [0x25,0x60,0x08,0xa4]
+# CHECK-EL:    cachee 1, 8($5)            # encoding: [0x25,0x60,0x08,0xa6]
+# CHECK-EL:    prefx 1, $3($5)            # encoding: [0x65,0x54,0xa0,0x09]
+# CHECK-EL:    swre $24, 5($3)            # encoding: [0x03,0x63,0x05,0xa2]
+# CHECK-EL:    swle $24, 5($3)            # encoding: [0x03,0x63,0x05,0xa0]
+# CHECK-EL:    lwre $24, 5($3)            # encoding: [0x03,0x63,0x05,0x66]
+# CHECK-EL:    lwle $24, 2($4)            # encoding: [0x04,0x63,0x02,0x64]
+# CHECK-EL:    lle $2, 8($4)              # encoding: [0x44,0x60,0x08,0x6c]
+# CHECK-EL:    sce $2, 8($4)              # encoding: [0x44,0x60,0x08,0xac]
 #------------------------------------------------------------------------------
 # Big endian
 #------------------------------------------------------------------------------
+# CHECK-EB:   sdbbp                       # encoding: [0x00,0x00,0xdb,0x7c]
+# CHECK-EB:   sdbbp 34                    # encoding: [0x00,0x22,0xdb,0x7c]
+# CHECK-EB-NOT:    .set push
+# CHECK-EB-NOT:    .set mips32r2
+# CHECK-EB:   rdhwr $5, $29               # encoding: [0x00,0xbd,0x6b,0x3c]
+# CHECK-EB-NOT:    .set pop
+# CHECK-EB:   cache 1, 8($5)              # encoding: [0x20,0x25,0x60,0x08]
+# CHECK-EB:   pref 1, 8($5)               # encoding: [0x60,0x25,0x20,0x08]
+# CHECK-EB:   ssnop                       # encoding: [0x00,0x00,0x08,0x00]
+# CHECK-EB:   ehb                         # encoding: [0x00,0x00,0x18,0x00]
+# CHECK-EB:   pause                       # encoding: [0x00,0x00,0x28,0x00]
 # CHECK-EB:   break                       # encoding: [0x00,0x00,0x00,0x07]
 # CHECK-EB:   break 7                     # encoding: [0x00,0x07,0x00,0x07]
 # CHECK-EB:   break 7, 5                  # encoding: [0x00,0x07,0x01,0x47]
@@ -50,7 +81,24 @@
 # CHECK-EB:   tlbr                        # encoding: [0x00,0x00,0x13,0x7c]
 # CHECK-EB:   tlbwi                       # encoding: [0x00,0x00,0x23,0x7c]
 # CHECK-EB:   tlbwr                       # encoding: [0x00,0x00,0x33,0x7c]
+# CHECK-EB:   prefe 1, 8($5)              # encoding: [0x60,0x25,0xa4,0x08]
+# CHECK-EB:   cachee 1, 8($5)             # encoding: [0x60,0x25,0xa6,0x08]
+# CHECK-EB:   prefx 1, $3($5)             # encoding: [0x54,0x65,0x09,0xa0]
+# CHECK-EB:   swre $24, 5($3)             # encoding: [0x63,0x03,0xa2,0x05]
+# CHECK-EB:   swle $24, 5($3)             # encoding: [0x63,0x03,0xa0,0x05]
+# CHECK-EB:   lwre $24, 5($3)             # encoding: [0x63,0x03,0x66,0x05]
+# CHECK-EB:   lwle $24, 2($4)             # encoding: [0x63,0x04,0x64,0x02]
+# CHECK-EB:   lle $2, 8($4)               # encoding: [0x60,0x44,0x6c,0x08]
+# CHECK-EB:   sce $2, 8($4)               # encoding: [0x60,0x44,0xac,0x08]
 
+    sdbbp
+    sdbbp 34
+    rdhwr $5, $29
+    cache 1, 8($5)
+    pref 1, 8($5)
+    ssnop
+    ehb
+    pause
     break
     break 7
     break 7,5
@@ -70,3 +118,12 @@
     tlbr
     tlbwi
     tlbwr
+    prefe 1, 8($5)
+    cachee 1, 8($5)
+    prefx 1, $3($5)
+    swre $24, 5($3)
+    swle $24, 5($3)
+    lwre $24, 5($3)
+    lwle $24, 2($4)
+    lle $2, 8($4)
+    sce $2, 8($4)

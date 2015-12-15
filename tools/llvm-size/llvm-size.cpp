@@ -1,4 +1,4 @@
-//===-- llvm-size.cpp - Print the size of each object section -------------===//
+//===-- llvm-size.cpp - Print the size of each object section ---*- C++ -*-===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -15,9 +15,9 @@
 
 #include "llvm/ADT/APInt.h"
 #include "llvm/Object/Archive.h"
-#include "llvm/Object/ObjectFile.h"
 #include "llvm/Object/MachO.h"
 #include "llvm/Object/MachOUniversal.h"
+#include "llvm/Object/ObjectFile.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <string>
 #include <system_error>
+
 using namespace llvm;
 using namespace object;
 
@@ -97,8 +98,8 @@ static size_t getNumLengthAsString(uint64_t num) {
   return result.size();
 }
 
-/// @brief Return the the printing format for the Radix.
-static const char *getRadixFmt(void) {
+/// @brief Return the printing format for the Radix.
+static const char *getRadixFmt() {
   switch (Radix) {
   case octal:
     return PRIo64;
@@ -122,12 +123,10 @@ static void PrintDarwinSectionSizes(MachOObjectFile *MachO) {
     fmt << "0x";
   fmt << "%" << radix_fmt;
 
-  uint32_t LoadCommandCount = MachO->getHeader().ncmds;
   uint32_t Filetype = MachO->getHeader().filetype;
-  MachOObjectFile::LoadCommandInfo Load = MachO->getFirstLoadCommandInfo();
 
   uint64_t total = 0;
-  for (unsigned I = 0;; ++I) {
+  for (const auto &Load : MachO->load_commands()) {
     if (Load.C.cmd == MachO::LC_SEGMENT_64) {
       MachO::segment_command_64 Seg = MachO->getSegment64LoadCommand(Load);
       outs() << "Segment " << Seg.segname << ": "
@@ -181,10 +180,6 @@ static void PrintDarwinSectionSizes(MachOObjectFile *MachO) {
       if (Seg.nsects != 0)
         outs() << "\ttotal " << format(fmt.str().c_str(), sec_total) << "\n";
     }
-    if (I == LoadCommandCount - 1)
-      break;
-    else
-      Load = MachO->getNextLoadCommandInfo(Load);
   }
   outs() << "total " << format(fmt.str().c_str(), total) << "\n";
 }
@@ -194,14 +189,11 @@ static void PrintDarwinSectionSizes(MachOObjectFile *MachO) {
 /// This is when used when @c OutputFormat is berkeley with a Mach-O file and
 /// produces the same output as darwin's size(1) default output.
 static void PrintDarwinSegmentSizes(MachOObjectFile *MachO) {
-  uint32_t LoadCommandCount = MachO->getHeader().ncmds;
-  MachOObjectFile::LoadCommandInfo Load = MachO->getFirstLoadCommandInfo();
-
   uint64_t total_text = 0;
   uint64_t total_data = 0;
   uint64_t total_objc = 0;
   uint64_t total_others = 0;
-  for (unsigned I = 0;; ++I) {
+  for (const auto &Load : MachO->load_commands()) {
     if (Load.C.cmd == MachO::LC_SEGMENT_64) {
       MachO::segment_command_64 Seg = MachO->getSegment64LoadCommand(Load);
       if (MachO->getHeader().filetype == MachO::MH_OBJECT) {
@@ -255,10 +247,6 @@ static void PrintDarwinSegmentSizes(MachOObjectFile *MachO) {
           total_others += Seg.vmsize;
       }
     }
-    if (I == LoadCommandCount - 1)
-      break;
-    else
-      Load = MachO->getNextLoadCommandInfo(Load);
   }
   uint64_t total = total_text + total_data + total_objc + total_others;
 
@@ -426,14 +414,6 @@ static bool checkMachOAndArchFlags(ObjectFile *o, StringRef file) {
 /// @brief Print the section sizes for @p file. If @p file is an archive, print
 ///        the section sizes for each archive member.
 static void PrintFileSectionSizes(StringRef file) {
-  // If file is not stdin, check that it exists.
-  if (file != "-") {
-    if (!sys::fs::exists(file)) {
-      errs() << ToolName << ": '" << file << "': "
-             << "No such file\n";
-      return;
-    }
-  }
 
   // Attempt to open the binary.
   ErrorOr<OwningBinary<Binary>> BinaryOrErr = createBinary(file);
@@ -448,7 +428,13 @@ static void PrintFileSectionSizes(StringRef file) {
     for (object::Archive::child_iterator i = a->child_begin(),
                                          e = a->child_end();
          i != e; ++i) {
-      ErrorOr<std::unique_ptr<Binary>> ChildOrErr = i->getAsBinary();
+      if (i->getError()) {
+        errs() << ToolName << ": " << file << ": " << i->getError().message()
+               << ".\n";
+        exit(1);
+      }
+      auto &c = i->get();
+      ErrorOr<std::unique_ptr<Binary>> ChildOrErr = c.getAsBinary();
       if (std::error_code EC = ChildOrErr.getError()) {
         errs() << ToolName << ": " << file << ": " << EC.message() << ".\n";
         continue;
@@ -484,7 +470,6 @@ static void PrintFileSectionSizes(StringRef file) {
           if (ArchFlags[i] == I->getArchTypeName()) {
             ArchFound = true;
             ErrorOr<std::unique_ptr<ObjectFile>> UO = I->getAsObjectFile();
-            std::unique_ptr<Archive> UA;
             if (UO) {
               if (ObjectFile *o = dyn_cast<ObjectFile>(&*UO.get())) {
                 MachOObjectFile *MachO = dyn_cast<MachOObjectFile>(o);
@@ -503,13 +488,21 @@ static void PrintFileSectionSizes(StringRef file) {
                   outs() << "\n";
                 }
               }
-            } else if (!I->getAsArchive(UA)) {
+            } else if (ErrorOr<std::unique_ptr<Archive>> AOrErr =
+                           I->getAsArchive()) {
+              std::unique_ptr<Archive> &UA = *AOrErr;
               // This is an archive. Iterate over each member and display its
               // sizes.
               for (object::Archive::child_iterator i = UA->child_begin(),
                                                    e = UA->child_end();
                    i != e; ++i) {
-                ErrorOr<std::unique_ptr<Binary>> ChildOrErr = i->getAsBinary();
+                if (std::error_code EC = i->getError()) {
+                  errs() << ToolName << ": " << file << ": " << EC.message()
+                         << ".\n";
+                  exit(1);
+                }
+                auto &c = i->get();
+                ErrorOr<std::unique_ptr<Binary>> ChildOrErr = c.getAsBinary();
                 if (std::error_code EC = ChildOrErr.getError()) {
                   errs() << ToolName << ": " << file << ": " << EC.message()
                          << ".\n";
@@ -560,7 +553,6 @@ static void PrintFileSectionSizes(StringRef file) {
            I != E; ++I) {
         if (HostArchName == I->getArchTypeName()) {
           ErrorOr<std::unique_ptr<ObjectFile>> UO = I->getAsObjectFile();
-          std::unique_ptr<Archive> UA;
           if (UO) {
             if (ObjectFile *o = dyn_cast<ObjectFile>(&*UO.get())) {
               MachOObjectFile *MachO = dyn_cast<MachOObjectFile>(o);
@@ -579,13 +571,21 @@ static void PrintFileSectionSizes(StringRef file) {
                 outs() << "\n";
               }
             }
-          } else if (!I->getAsArchive(UA)) {
+          } else if (ErrorOr<std::unique_ptr<Archive>> AOrErr =
+                         I->getAsArchive()) {
+            std::unique_ptr<Archive> &UA = *AOrErr;
             // This is an archive. Iterate over each member and display its
             // sizes.
             for (object::Archive::child_iterator i = UA->child_begin(),
                                                  e = UA->child_end();
                  i != e; ++i) {
-              ErrorOr<std::unique_ptr<Binary>> ChildOrErr = i->getAsBinary();
+              if (std::error_code EC = i->getError()) {
+                errs() << ToolName << ": " << file << ": " << EC.message()
+                       << ".\n";
+                exit(1);
+              }
+              auto &c = i->get();
+              ErrorOr<std::unique_ptr<Binary>> ChildOrErr = c.getAsBinary();
               if (std::error_code EC = ChildOrErr.getError()) {
                 errs() << ToolName << ": " << file << ": " << EC.message()
                        << ".\n";
@@ -623,7 +623,6 @@ static void PrintFileSectionSizes(StringRef file) {
                                                E = UB->end_objects();
          I != E; ++I) {
       ErrorOr<std::unique_ptr<ObjectFile>> UO = I->getAsObjectFile();
-      std::unique_ptr<Archive> UA;
       if (UO) {
         if (ObjectFile *o = dyn_cast<ObjectFile>(&*UO.get())) {
           MachOObjectFile *MachO = dyn_cast<MachOObjectFile>(o);
@@ -643,12 +642,19 @@ static void PrintFileSectionSizes(StringRef file) {
             outs() << "\n";
           }
         }
-      } else if (!I->getAsArchive(UA)) {
+      } else if (ErrorOr<std::unique_ptr<Archive>> AOrErr =
+                         I->getAsArchive()) {
+        std::unique_ptr<Archive> &UA = *AOrErr;
         // This is an archive. Iterate over each member and display its sizes.
         for (object::Archive::child_iterator i = UA->child_begin(),
                                              e = UA->child_end();
              i != e; ++i) {
-          ErrorOr<std::unique_ptr<Binary>> ChildOrErr = i->getAsBinary();
+          if (std::error_code EC = i->getError()) {
+            errs() << ToolName << ": " << file << ": " << EC.message() << ".\n";
+            exit(1);
+          }
+          auto &c = i->get();
+          ErrorOr<std::unique_ptr<Binary>> ChildOrErr = c.getAsBinary();
           if (std::error_code EC = ChildOrErr.getError()) {
             errs() << ToolName << ": " << file << ": " << EC.message() << ".\n";
             continue;
@@ -706,7 +712,7 @@ int main(int argc, char **argv) {
 
   ToolName = argv[0];
   if (OutputFormatShort.getNumOccurrences())
-    OutputFormat = OutputFormatShort;
+    OutputFormat = static_cast<OutputFormatTy>(OutputFormatShort);
   if (RadixShort.getNumOccurrences())
     Radix = RadixShort;
 

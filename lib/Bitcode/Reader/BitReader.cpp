@@ -9,9 +9,11 @@
 
 #include "llvm-c/BitReader.h"
 #include "llvm/Bitcode/ReaderWriter.h"
+#include "llvm/IR/DiagnosticPrinter.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/raw_ostream.h"
 #include <cstring>
 #include <string>
 
@@ -26,20 +28,38 @@ LLVMBool LLVMParseBitcode(LLVMMemoryBufferRef MemBuf,
                                    OutMessage);
 }
 
+static void diagnosticHandler(const DiagnosticInfo &DI, void *C) {
+  auto *Message = reinterpret_cast<std::string *>(C);
+  raw_string_ostream Stream(*Message);
+  DiagnosticPrinterRawOStream DP(Stream);
+  DI.print(DP);
+}
+
 LLVMBool LLVMParseBitcodeInContext(LLVMContextRef ContextRef,
                                    LLVMMemoryBufferRef MemBuf,
                                    LLVMModuleRef *OutModule,
                                    char **OutMessage) {
-  ErrorOr<Module *> ModuleOrErr =
-      parseBitcodeFile(unwrap(MemBuf)->getMemBufferRef(), *unwrap(ContextRef));
-  if (std::error_code EC = ModuleOrErr.getError()) {
+  MemoryBufferRef Buf = unwrap(MemBuf)->getMemBufferRef();
+  LLVMContext &Ctx = *unwrap(ContextRef);
+
+  LLVMContext::DiagnosticHandlerTy OldDiagnosticHandler =
+      Ctx.getDiagnosticHandler();
+  void *OldDiagnosticContext = Ctx.getDiagnosticContext();
+  std::string Message;
+  Ctx.setDiagnosticHandler(diagnosticHandler, &Message, true);
+
+  ErrorOr<std::unique_ptr<Module>> ModuleOrErr = parseBitcodeFile(Buf, Ctx);
+
+  Ctx.setDiagnosticHandler(OldDiagnosticHandler, OldDiagnosticContext, true);
+
+  if (ModuleOrErr.getError()) {
     if (OutMessage)
-      *OutMessage = strdup(EC.message().c_str());
+      *OutMessage = strdup(Message.c_str());
     *OutModule = wrap((Module*)nullptr);
     return 1;
   }
 
-  *OutModule = wrap(ModuleOrErr.get());
+  *OutModule = wrap(ModuleOrErr.get().release());
   return 0;
 }
 
@@ -53,7 +73,7 @@ LLVMBool LLVMGetBitcodeModuleInContext(LLVMContextRef ContextRef,
   std::string Message;
   std::unique_ptr<MemoryBuffer> Owner(unwrap(MemBuf));
 
-  ErrorOr<Module *> ModuleOrErr =
+  ErrorOr<std::unique_ptr<Module>> ModuleOrErr =
       getLazyBitcodeModule(std::move(Owner), *unwrap(ContextRef));
   Owner.release();
 
@@ -64,7 +84,7 @@ LLVMBool LLVMGetBitcodeModuleInContext(LLVMContextRef ContextRef,
     return 1;
   }
 
-  *OutM = wrap(ModuleOrErr.get());
+  *OutM = wrap(ModuleOrErr.get().release());
 
   return 0;
 

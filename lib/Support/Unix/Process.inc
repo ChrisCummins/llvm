@@ -39,6 +39,9 @@
     !defined(__OpenBSD__) && !defined(__Bitrig__)
 #include <malloc.h>
 #endif
+#if defined(HAVE_MALLCTL)
+#include <malloc_np.h>
+#endif
 #ifdef HAVE_MALLOC_MALLOC_H
 #include <malloc/malloc.h>
 #endif
@@ -56,10 +59,6 @@
 
 using namespace llvm;
 using namespace sys;
-
-process::id_type self_process::get_id() {
-  return getpid();
-}
 
 static std::pair<TimeValue, TimeValue> getRUsageTimes() {
 #if defined(HAVE_GETRUSAGE)
@@ -80,42 +79,18 @@ static std::pair<TimeValue, TimeValue> getRUsageTimes() {
 #endif
 }
 
-TimeValue self_process::get_user_time() const {
-#if _POSIX_TIMERS > 0 && _POSIX_CPUTIME > 0
-  // Try to get a high resolution CPU timer.
-  struct timespec TS;
-  if (::clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &TS) == 0)
-    return TimeValue(static_cast<TimeValue::SecondsType>(TS.tv_sec),
-                     static_cast<TimeValue::NanoSecondsType>(TS.tv_nsec));
-#endif
-
-  // Otherwise fall back to rusage based timing.
-  return getRUsageTimes().first;
-}
-
-TimeValue self_process::get_system_time() const {
-  // We can only collect system time by inspecting the results of getrusage.
-  return getRUsageTimes().second;
-}
-
 // On Cygwin, getpagesize() returns 64k(AllocationGranularity) and
 // offset in mmap(3) should be aligned to the AllocationGranularity.
-static unsigned getPageSize() {
+unsigned Process::getPageSize() {
 #if defined(HAVE_GETPAGESIZE)
-  const int page_size = ::getpagesize();
+  static const int page_size = ::getpagesize();
 #elif defined(HAVE_SYSCONF)
-  long page_size = ::sysconf(_SC_PAGE_SIZE);
+  static long page_size = ::sysconf(_SC_PAGE_SIZE);
 #else
 #warning Cannot get the page size on this machine
 #endif
   return static_cast<unsigned>(page_size);
 }
-
-// This constructor guaranteed to be run exactly once on a single thread, and
-// sets up various process invariants that can be queried cheaply from then on.
-self_process::self_process() : PageSize(getPageSize()) {
-}
-
 
 size_t Process::GetMallocUsage() {
 #if defined(HAVE_MALLINFO)
@@ -126,6 +101,12 @@ size_t Process::GetMallocUsage() {
   malloc_statistics_t Stats;
   malloc_zone_statistics(malloc_default_zone(), &Stats);
   return Stats.size_in_use;   // darwin
+#elif defined(HAVE_MALLCTL)
+  size_t alloc, sz;
+  sz = sizeof(size_t);
+  if (mallctl("stats.allocated", &alloc, &sz, NULL, 0) == 0)
+    return alloc;
+  return 0;
 #elif defined(HAVE_SBRK)
   // Note this is only an approximation and more closely resembles
   // the value returned by mallinfo in the arena field.
@@ -133,8 +114,7 @@ size_t Process::GetMallocUsage() {
   char *EndOfMemory = (char*)sbrk(0);
   if (EndOfMemory != ((char*)-1) && StartOfMemory != ((char*)-1))
     return EndOfMemory - StartOfMemory;
-  else
-    return 0;
+  return 0;
 #else
 #warning Cannot get malloc info on this platform
   return 0;
@@ -219,8 +199,8 @@ public:
   }
 
 private:
-  FDCloser(const FDCloser &) LLVM_DELETED_FUNCTION;
-  void operator=(const FDCloser &) LLVM_DELETED_FUNCTION;
+  FDCloser(const FDCloser &) = delete;
+  void operator=(const FDCloser &) = delete;
 
   int &FD;
   bool KeepOpen;
@@ -450,13 +430,18 @@ const char *Process::ResetColor() {
 #if !defined(HAVE_DECL_ARC4RANDOM) || !HAVE_DECL_ARC4RANDOM
 static unsigned GetRandomNumberSeed() {
   // Attempt to get the initial seed from /dev/urandom, if possible.
-  if (FILE *RandomSource = ::fopen("/dev/urandom", "r")) {
+  int urandomFD = open("/dev/urandom", O_RDONLY);
+
+  if (urandomFD != -1) {
     unsigned seed;
-    int count = ::fread((void *)&seed, sizeof(seed), 1, RandomSource);
-    ::fclose(RandomSource);
+    // Don't use a buffered read to avoid reading more data
+    // from /dev/urandom than we need.
+    int count = read(urandomFD, (void *)&seed, sizeof(seed));
+
+    close(urandomFD);
 
     // Return the seed if the read was successful.
-    if (count == 1)
+    if (count == sizeof(seed))
       return seed;
   }
 

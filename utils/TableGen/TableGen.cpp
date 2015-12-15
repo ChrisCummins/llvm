@@ -41,7 +41,8 @@ enum ActionType {
   PrintEnums,
   PrintSets,
   GenOptParserDefs,
-  GenCTags
+  GenCTags,
+  GenAttributes
 };
 
 namespace {
@@ -85,6 +86,8 @@ namespace {
                                "Generate option definitions"),
                     clEnumValN(GenCTags, "gen-ctags",
                                "Generate ctags-compatible index"),
+                    clEnumValN(GenAttributes, "gen-attrs",
+                               "Generate attributes"),
                     clEnumValEnd));
 
   cl::opt<std::string>
@@ -143,9 +146,8 @@ bool LLVMTableGenMain(raw_ostream &OS, RecordKeeper &Records) {
     break;
   case PrintEnums:
   {
-    std::vector<Record*> Recs = Records.getAllDerivedDefinitions(Class);
-    for (unsigned i = 0, e = Recs.size(); i != e; ++i)
-      OS << Recs[i]->getName() << ", ";
+    for (Record *Rec : Records.getAllDerivedDefinitions(Class))
+      OS << Rec->getName() << ", ";
     OS << "\n";
     break;
   }
@@ -153,19 +155,21 @@ bool LLVMTableGenMain(raw_ostream &OS, RecordKeeper &Records) {
   {
     SetTheory Sets;
     Sets.addFieldExpander("Set", "Elements");
-    std::vector<Record*> Recs = Records.getAllDerivedDefinitions("Set");
-    for (unsigned i = 0, e = Recs.size(); i != e; ++i) {
-      OS << Recs[i]->getName() << " = [";
-      const std::vector<Record*> *Elts = Sets.expand(Recs[i]);
+    for (Record *Rec : Records.getAllDerivedDefinitions("Set")) {
+      OS << Rec->getName() << " = [";
+      const std::vector<Record*> *Elts = Sets.expand(Rec);
       assert(Elts && "Couldn't expand Set instance");
-      for (unsigned ei = 0, ee = Elts->size(); ei != ee; ++ei)
-        OS << ' ' << (*Elts)[ei]->getName();
+      for (Record *Elt : *Elts)
+        OS << ' ' << Elt->getName();
       OS << " ]\n";
     }
     break;
   }
   case GenCTags:
     EmitCTags(Records, OS);
+    break;
+  case GenAttributes:
+    EmitAttributes(Records, OS);
     break;
   }
 

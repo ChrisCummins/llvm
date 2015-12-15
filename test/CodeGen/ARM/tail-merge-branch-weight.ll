@@ -9,7 +9,7 @@
 ;                = 0.2 * 0.4 + 0.8 * 0.7 = 0.64
 
 ; CHECK: # Machine code for function test0:
-; CHECK: Successors according to CFG: BB#{{[0-9]+}}(13) BB#{{[0-9]+}}(24)
+; CHECK: Successors according to CFG: BB#{{[0-9]+}}({{[0-9a-fx/= ]+}}20.00%) BB#{{[0-9]+}}({{[0-9a-fx/= ]+}}80.00%)
 ; CHECK: BB#{{[0-9]+}}:
 ; CHECK: BB#{{[0-9]+}}:
 ; CHECK: # End machine code for function test0.
@@ -39,6 +39,6 @@ L3:                                           ; preds = %L0, %L1, %L2
   ret i32 %retval.0
 }
 
-!0 = metadata !{metadata !"branch_weights", i32 200, i32 800}
-!1 = metadata !{metadata !"branch_weights", i32 600, i32 400}
-!2 = metadata !{metadata !"branch_weights", i32 300, i32 700}
+!0 = !{!"branch_weights", i32 200, i32 800}
+!1 = !{!"branch_weights", i32 600, i32 400}
+!2 = !{!"branch_weights", i32 300, i32 700}

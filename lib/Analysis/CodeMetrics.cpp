@@ -11,7 +11,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/Analysis/AssumptionTracker.h"
+#include "llvm/Analysis/AssumptionCache.h"
 #include "llvm/Analysis/CodeMetrics.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
@@ -21,6 +21,7 @@
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/raw_ostream.h"
 
 #define DEBUG_TYPE "code-metrics"
 
@@ -40,18 +41,12 @@ static void completeEphemeralValues(SmallVector<const Value *, 16> &WorkSet,
     const Value *V = WorkSet.front();
     WorkSet.erase(WorkSet.begin());
 
-    if (!Visited.insert(V))
+    if (!Visited.insert(V).second)
       continue;
 
     // If all uses of this value are ephemeral, then so is this value.
-    bool FoundNEUse = false;
-    for (const User *I : V->users())
-      if (!EphValues.count(I)) {
-        FoundNEUse = true;
-        break;
-      }
-
-    if (FoundNEUse)
+    if (!std::all_of(V->user_begin(), V->user_end(),
+                     [&](const User *U) { return EphValues.count(U); }))
       continue;
 
     EphValues.insert(V);
@@ -66,11 +61,16 @@ static void completeEphemeralValues(SmallVector<const Value *, 16> &WorkSet,
 }
 
 // Find all ephemeral values.
-void CodeMetrics::collectEphemeralValues(const Loop *L, AssumptionTracker *AT,
-                                         SmallPtrSetImpl<const Value*> &EphValues) {
+void CodeMetrics::collectEphemeralValues(
+    const Loop *L, AssumptionCache *AC,
+    SmallPtrSetImpl<const Value *> &EphValues) {
   SmallVector<const Value *, 16> WorkSet;
 
-  for (auto &I : AT->assumptions(L->getHeader()->getParent())) {
+  for (auto &AssumeVH : AC->assumptions()) {
+    if (!AssumeVH)
+      continue;
+    Instruction *I = cast<Instruction>(AssumeVH);
+
     // Filter out call sites outside of the loop so we don't to a function's
     // worth of work for each of its loops (and, in the common case, ephemeral
     // values in the loop are likely due to @llvm.assume calls in the loop).
@@ -83,12 +83,19 @@ void CodeMetrics::collectEphemeralValues(const Loop *L, AssumptionTracker *AT,
   completeEphemeralValues(WorkSet, EphValues);
 }
 
-void CodeMetrics::collectEphemeralValues(const Function *F, AssumptionTracker *AT,
-                                         SmallPtrSetImpl<const Value*> &EphValues) {
+void CodeMetrics::collectEphemeralValues(
+    const Function *F, AssumptionCache *AC,
+    SmallPtrSetImpl<const Value *> &EphValues) {
   SmallVector<const Value *, 16> WorkSet;
 
-  for (auto &I : AT->assumptions(const_cast<Function*>(F)))
+  for (auto &AssumeVH : AC->assumptions()) {
+    if (!AssumeVH)
+      continue;
+    Instruction *I = cast<Instruction>(AssumeVH);
+    assert(I->getParent()->getParent() == F &&
+           "Found assumption for the wrong function!");
     WorkSet.push_back(I);
+  }
 
   completeEphemeralValues(WorkSet, EphValues);
 }
@@ -103,7 +110,7 @@ void CodeMetrics::analyzeBasicBlock(const BasicBlock *BB,
   for (BasicBlock::const_iterator II = BB->begin(), E = BB->end();
        II != E; ++II) {
     // Skip ephemeral values.
-    if (EphValues.count(II))
+    if (EphValues.count(&*II))
       continue;
 
     // Special handling for calls.
@@ -141,6 +148,9 @@ void CodeMetrics::analyzeBasicBlock(const BasicBlock *BB,
 
     if (isa<ExtractElementInst>(II) || II->getType()->isVectorTy())
       ++NumVectorInsts;
+
+    if (II->getType()->isTokenTy() && II->isUsedOutsideOfBlock(BB))
+      notDuplicatable = true;
 
     if (const CallInst *CI = dyn_cast<CallInst>(II))
       if (CI->cannotDuplicate())

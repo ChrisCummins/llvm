@@ -21,7 +21,6 @@
 #include "llvm/MC/MCSymbolizer.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FormattedStream.h"
-#include "llvm/Support/MemoryObject.h"
 #include "llvm/Support/TargetRegistry.h"
 
 using namespace llvm;
@@ -34,22 +33,22 @@ using namespace llvm;
 // disassembler context.  If not, it returns NULL.
 //
 LLVMDisasmContextRef
-LLVMCreateDisasmCPUFeatures(const char *Triple, const char *CPU,
+LLVMCreateDisasmCPUFeatures(const char *TT, const char *CPU,
                             const char *Features, void *DisInfo, int TagType,
                             LLVMOpInfoCallback GetOpInfo,
                             LLVMSymbolLookupCallback SymbolLookUp) {
   // Get the target.
   std::string Error;
-  const Target *TheTarget = TargetRegistry::lookupTarget(Triple, Error);
+  const Target *TheTarget = TargetRegistry::lookupTarget(TT, Error);
   if (!TheTarget)
     return nullptr;
 
-  const MCRegisterInfo *MRI = TheTarget->createMCRegInfo(Triple);
+  const MCRegisterInfo *MRI = TheTarget->createMCRegInfo(TT);
   if (!MRI)
     return nullptr;
 
   // Get the assembler info needed to setup the MCContext.
-  const MCAsmInfo *MAI = TheTarget->createMCAsmInfo(*MRI, Triple);
+  const MCAsmInfo *MAI = TheTarget->createMCAsmInfo(*MRI, TT);
   if (!MAI)
     return nullptr;
 
@@ -57,8 +56,8 @@ LLVMCreateDisasmCPUFeatures(const char *Triple, const char *CPU,
   if (!MII)
     return nullptr;
 
-  const MCSubtargetInfo *STI = TheTarget->createMCSubtargetInfo(Triple, CPU,
-                                                                Features);
+  const MCSubtargetInfo *STI =
+      TheTarget->createMCSubtargetInfo(TT, CPU, Features);
   if (!STI)
     return nullptr;
 
@@ -73,25 +72,24 @@ LLVMCreateDisasmCPUFeatures(const char *Triple, const char *CPU,
     return nullptr;
 
   std::unique_ptr<MCRelocationInfo> RelInfo(
-      TheTarget->createMCRelocationInfo(Triple, *Ctx));
+      TheTarget->createMCRelocationInfo(TT, *Ctx));
   if (!RelInfo)
     return nullptr;
 
   std::unique_ptr<MCSymbolizer> Symbolizer(TheTarget->createMCSymbolizer(
-      Triple, GetOpInfo, SymbolLookUp, DisInfo, Ctx, RelInfo.release()));
+      TT, GetOpInfo, SymbolLookUp, DisInfo, Ctx, std::move(RelInfo)));
   DisAsm->setSymbolizer(std::move(Symbolizer));
 
   // Set up the instruction printer.
   int AsmPrinterVariant = MAI->getAssemblerDialect();
-  MCInstPrinter *IP = TheTarget->createMCInstPrinter(AsmPrinterVariant,
-                                                     *MAI, *MII, *MRI, *STI);
+  MCInstPrinter *IP = TheTarget->createMCInstPrinter(
+      Triple(TT), AsmPrinterVariant, *MAI, *MII, *MRI);
   if (!IP)
     return nullptr;
 
-  LLVMDisasmContext *DC = new LLVMDisasmContext(Triple, DisInfo, TagType,
-                                                GetOpInfo, SymbolLookUp,
-                                                TheTarget, MAI, MRI,
-                                                STI, MII, Ctx, DisAsm, IP);
+  LLVMDisasmContext *DC =
+      new LLVMDisasmContext(TT, DisInfo, TagType, GetOpInfo, SymbolLookUp,
+                            TheTarget, MAI, MRI, STI, MII, Ctx, DisAsm, IP);
   if (!DC)
     return nullptr;
 
@@ -99,19 +97,19 @@ LLVMCreateDisasmCPUFeatures(const char *Triple, const char *CPU,
   return DC;
 }
 
-LLVMDisasmContextRef LLVMCreateDisasmCPU(const char *Triple, const char *CPU,
-                                         void *DisInfo, int TagType,
-                                         LLVMOpInfoCallback GetOpInfo,
-                                         LLVMSymbolLookupCallback SymbolLookUp){
-  return LLVMCreateDisasmCPUFeatures(Triple, CPU, "", DisInfo, TagType,
-                                     GetOpInfo, SymbolLookUp);
+LLVMDisasmContextRef
+LLVMCreateDisasmCPU(const char *TT, const char *CPU, void *DisInfo, int TagType,
+                    LLVMOpInfoCallback GetOpInfo,
+                    LLVMSymbolLookupCallback SymbolLookUp) {
+  return LLVMCreateDisasmCPUFeatures(TT, CPU, "", DisInfo, TagType, GetOpInfo,
+                                     SymbolLookUp);
 }
 
-LLVMDisasmContextRef LLVMCreateDisasm(const char *Triple, void *DisInfo,
+LLVMDisasmContextRef LLVMCreateDisasm(const char *TT, void *DisInfo,
                                       int TagType, LLVMOpInfoCallback GetOpInfo,
                                       LLVMSymbolLookupCallback SymbolLookUp) {
-  return LLVMCreateDisasmCPUFeatures(Triple, "", "", DisInfo, TagType,
-                                     GetOpInfo, SymbolLookUp);
+  return LLVMCreateDisasmCPUFeatures(TT, "", "", DisInfo, TagType, GetOpInfo,
+                                     SymbolLookUp);
 }
 
 //
@@ -122,36 +120,11 @@ void LLVMDisasmDispose(LLVMDisasmContextRef DCR){
   delete DC;
 }
 
-namespace {
-//
-// The memory object created by LLVMDisasmInstruction().
-//
-class DisasmMemoryObject : public MemoryObject {
-  uint8_t *Bytes;
-  uint64_t Size;
-  uint64_t BasePC;
-public:
-  DisasmMemoryObject(uint8_t *bytes, uint64_t size, uint64_t basePC) :
-                     Bytes(bytes), Size(size), BasePC(basePC) {}
-
-  uint64_t getBase() const override { return BasePC; }
-  uint64_t getExtent() const override { return Size; }
-
-  int readByte(uint64_t Addr, uint8_t *Byte) const override {
-    if (Addr - BasePC >= Size)
-      return -1;
-    *Byte = Bytes[Addr - BasePC];
-    return 0;
-  }
-};
-} // end anonymous namespace
-
 /// \brief Emits the comments that are stored in \p DC comment stream.
 /// Each comment in the comment stream must end with a newline.
 static void emitComments(LLVMDisasmContext *DC,
                          formatted_raw_ostream &FormattedOS) {
   // Flush the stream before taking its content.
-  DC->CommentStream.flush();
   StringRef Comments = DC->CommentsToEmit.str();
   // Get the default information for printing a comment.
   const MCAsmInfo *MAI = DC->getAsmInfo();
@@ -173,13 +146,12 @@ static void emitComments(LLVMDisasmContext *DC,
 
   // Tell the comment stream that the vector changed underneath it.
   DC->CommentsToEmit.clear();
-  DC->CommentStream.resync();
 }
 
-/// \brief Gets latency information for \p Inst form the itinerary
+/// \brief Gets latency information for \p Inst from the itinerary
 /// scheduling model, based on \p DC information.
 /// \return The maximum expected latency over all the operands or -1
-/// if no information are available.
+/// if no information is available.
 static int getItineraryLatency(LLVMDisasmContext *DC, const MCInst &Inst) {
   const int NoInformationAvailable = -1;
 
@@ -204,7 +176,7 @@ static int getItineraryLatency(LLVMDisasmContext *DC, const MCInst &Inst) {
 
 /// \brief Gets latency information for \p Inst, based on \p DC information.
 /// \return The maximum expected latency over all the definitions or -1
-/// if no information are available.
+/// if no information is available.
 static int getLatency(LLVMDisasmContext *DC, const MCInst &Inst) {
   // Try to compute scheduling information.
   const MCSubtargetInfo *STI = DC->getSubtargetInfo();
@@ -245,7 +217,7 @@ static int getLatency(LLVMDisasmContext *DC, const MCInst &Inst) {
 static void emitLatency(LLVMDisasmContext *DC, const MCInst &Inst) {
   int Latency = getLatency(DC, Inst);
 
-  // Report only interesting latency.
+  // Report only interesting latencies.
   if (Latency < 2)
     return;
 
@@ -269,7 +241,7 @@ size_t LLVMDisasmInstruction(LLVMDisasmContextRef DCR, uint8_t *Bytes,
                              size_t OutStringSize){
   LLVMDisasmContext *DC = (LLVMDisasmContext *)DCR;
   // Wrap the pointer to the Bytes, BytesSize and PC in a MemoryObject.
-  DisasmMemoryObject MemoryObject(Bytes, BytesSize, PC);
+  ArrayRef<uint8_t> Data(Bytes, BytesSize);
 
   uint64_t Size;
   MCInst Inst;
@@ -278,7 +250,7 @@ size_t LLVMDisasmInstruction(LLVMDisasmContextRef DCR, uint8_t *Bytes,
   MCDisassembler::DecodeStatus S;
   SmallVector<char, 64> InsnStr;
   raw_svector_ostream Annotations(InsnStr);
-  S = DisAsm->getInstruction(Inst, Size, MemoryObject, PC,
+  S = DisAsm->getInstruction(Inst, Size, Data, PC,
                              /*REMOVE*/ nulls(), Annotations);
   switch (S) {
   case MCDisassembler::Fail:
@@ -287,19 +259,17 @@ size_t LLVMDisasmInstruction(LLVMDisasmContextRef DCR, uint8_t *Bytes,
     return 0;
 
   case MCDisassembler::Success: {
-    Annotations.flush();
     StringRef AnnotationsStr = Annotations.str();
 
     SmallVector<char, 64> InsnStr;
     raw_svector_ostream OS(InsnStr);
     formatted_raw_ostream FormattedOS(OS);
-    IP->printInst(&Inst, FormattedOS, AnnotationsStr);
+    IP->printInst(&Inst, FormattedOS, AnnotationsStr, *DC->getSubtargetInfo());
 
     if (DC->getOptions() & LLVMDisassembler_Option_PrintLatency)
       emitLatency(DC, Inst);
 
     emitComments(DC, FormattedOS);
-    OS.flush();
 
     assert(OutStringSize != 0 && "Output buffer cannot be zero size");
     size_t OutputSize = std::min(OutStringSize-1, InsnStr.size());
@@ -337,11 +307,10 @@ int LLVMSetDisasmOptions(LLVMDisasmContextRef DCR, uint64_t Options){
       const MCAsmInfo *MAI = DC->getAsmInfo();
       const MCInstrInfo *MII = DC->getInstrInfo();
       const MCRegisterInfo *MRI = DC->getRegisterInfo();
-      const MCSubtargetInfo *STI = DC->getSubtargetInfo();
       int AsmPrinterVariant = MAI->getAssemblerDialect();
       AsmPrinterVariant = AsmPrinterVariant == 0 ? 1 : 0;
       MCInstPrinter *IP = DC->getTarget()->createMCInstPrinter(
-          AsmPrinterVariant, *MAI, *MII, *MRI, *STI);
+          Triple(DC->getTripleName()), AsmPrinterVariant, *MAI, *MII, *MRI);
       if (IP) {
         DC->setIP(IP);
         DC->addOptions(LLVMDisassembler_Option_AsmPrinterVariant);

@@ -59,13 +59,16 @@
 //===----------------------------------------------------------------------===//
 
 #include "AArch64.h"
+#include "MCTargetDesc/AArch64AddressingModes.h"
 #include "llvm/ADT/DepthFirstIterator.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/CodeGen/LiveIntervalAnalysis.h"
 #include "llvm/CodeGen/MachineDominators.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
+#include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
@@ -85,11 +88,12 @@ namespace {
 class AArch64ConditionOptimizer : public MachineFunctionPass {
   const TargetInstrInfo *TII;
   MachineDominatorTree *DomTree;
+  const MachineRegisterInfo *MRI;
 
 public:
   // Stores immediate, compare instruction opcode and branch condition (in this
   // order) of adjusted comparison.
-  typedef std::tuple<int, int, AArch64CC::CondCode> CmpInfo;
+  typedef std::tuple<int, unsigned, AArch64CC::CondCode> CmpInfo;
 
   static char ID;
   AArch64ConditionOptimizer() : MachineFunctionPass(ID) {}
@@ -134,13 +138,11 @@ void AArch64ConditionOptimizer::getAnalysisUsage(AnalysisUsage &AU) const {
 MachineInstr *AArch64ConditionOptimizer::findSuitableCompare(
     MachineBasicBlock *MBB) {
   MachineBasicBlock::iterator I = MBB->getFirstTerminator();
-  if (I == MBB->end()) {
+  if (I == MBB->end())
     return nullptr;
-  }
 
-  if (I->getOpcode() != AArch64::Bcc) {
-      return nullptr;
-  }
+  if (I->getOpcode() != AArch64::Bcc)
+    return nullptr;
 
   // Now find the instruction controlling the terminator.
   for (MachineBasicBlock::iterator B = MBB->begin(); I != B;) {
@@ -152,8 +154,30 @@ MachineInstr *AArch64ConditionOptimizer::findSuitableCompare(
     case AArch64::SUBSXri:
     // cmn is an alias for adds with a dead destination register.
     case AArch64::ADDSWri:
-    case AArch64::ADDSXri:
+    case AArch64::ADDSXri: {
+      unsigned ShiftAmt = AArch64_AM::getShiftValue(I->getOperand(3).getImm());
+      if (!I->getOperand(2).isImm()) {
+        DEBUG(dbgs() << "Immediate of cmp is symbolic, " << *I << '\n');
+        return nullptr;
+      } else if (I->getOperand(2).getImm() << ShiftAmt >= 0xfff) {
+        DEBUG(dbgs() << "Immediate of cmp may be out of range, " << *I << '\n');
+        return nullptr;
+      } else if (!MRI->use_empty(I->getOperand(0).getReg())) {
+        DEBUG(dbgs() << "Destination of cmp is not dead, " << *I << '\n');
+        return nullptr;
+      }
       return I;
+    }
+    // Prevent false positive case like:
+    // cmp      w19, #0
+    // cinc     w0, w19, gt
+    // ...
+    // fcmp     d8, #0.0
+    // b.gt     .LBB0_5
+    case AArch64::FCMPDri:
+    case AArch64::FCMPSri:
+    case AArch64::FCMPESri:
+    case AArch64::FCMPEDri:
 
     case AArch64::SUBSWrr:
     case AArch64::SUBSXrr:
@@ -199,7 +223,7 @@ static AArch64CC::CondCode getAdjustedCmp(AArch64CC::CondCode Cmp) {
 // operator and condition code.
 AArch64ConditionOptimizer::CmpInfo AArch64ConditionOptimizer::adjustCmp(
     MachineInstr *CmpMI, AArch64CC::CondCode Cmp) {
-  int Opc = CmpMI->getOpcode();
+  unsigned Opc = CmpMI->getOpcode();
 
   // CMN (compare with negative immediate) is an alias to ADDS (as
   // "operand - negative" == "operand + positive")
@@ -228,7 +252,7 @@ AArch64ConditionOptimizer::CmpInfo AArch64ConditionOptimizer::adjustCmp(
 void AArch64ConditionOptimizer::modifyCmp(MachineInstr *CmpMI,
     const CmpInfo &Info) {
   int Imm;
-  int Opc;
+  unsigned Opc;
   AArch64CC::CondCode Cmp;
   std::tie(Imm, Opc, Cmp) = Info;
 
@@ -287,8 +311,9 @@ bool AArch64ConditionOptimizer::adjustTo(MachineInstr *CmpMI,
 bool AArch64ConditionOptimizer::runOnMachineFunction(MachineFunction &MF) {
   DEBUG(dbgs() << "********** AArch64 Conditional Compares **********\n"
                << "********** Function: " << MF.getName() << '\n');
-  TII = MF.getTarget().getSubtargetImpl()->getInstrInfo();
+  TII = MF.getSubtarget().getInstrInfo();
   DomTree = &getAnalysis<MachineDominatorTree>();
+  MRI = &MF.getRegInfo();
 
   bool Changed = false;
 
