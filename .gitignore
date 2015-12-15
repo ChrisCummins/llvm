@@ -94,6 +94,7 @@ bindings/go/llvm/workdir
 /bindings/ocaml/transforms/passmgr_builder/Release+Asserts/
 /bindings/ocaml/transforms/scalar/Release+Asserts/
 /bindings/ocaml/transforms/vectorize/Release+Asserts/
+/build
 /cmake/modules/LLVMBuildExports.cmake
 /cmake/modules/LLVMConfig.cmake
 /cmake/modules/LLVMConfigVersion.cmake
