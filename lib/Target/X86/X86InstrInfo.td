@@ -771,6 +771,7 @@ def HasVLX       : Predicate<"Subtarget->hasVLX()">,
 def NoVLX        : Predicate<"!Subtarget->hasVLX()">;
 def NoVLX_Or_NoBWI : Predicate<"!Subtarget->hasVLX() || !Subtarget->hasBWI()">;
 def NoVLX_Or_NoDQI : Predicate<"!Subtarget->hasVLX() || !Subtarget->hasDQI()">;
+def PKU        : Predicate<"!Subtarget->hasPKU()">;
 
 def HasPOPCNT    : Predicate<"Subtarget->hasPOPCNT()">;
 def HasAES       : Predicate<"Subtarget->hasAES()">;
@@ -819,6 +820,8 @@ def In32BitMode  : Predicate<"Subtarget->is32Bit()">,
                              AssemblerPredicate<"Mode32Bit", "32-bit mode">;
 def IsWin64      : Predicate<"Subtarget->isTargetWin64()">;
 def NotWin64     : Predicate<"!Subtarget->isTargetWin64()">;
+def NotWin64WithoutFP : Predicate<"!Subtarget->isTargetWin64() ||"
+                                  "Subtarget->getFrameLowering()->hasFP(*MF)">;
 def IsPS4        : Predicate<"Subtarget->isTargetPS4()">;
 def NotPS4       : Predicate<"!Subtarget->isTargetPS4()">;
 def IsNaCl       : Predicate<"Subtarget->isTargetNaCl()">;
@@ -832,6 +835,7 @@ def NearData     : Predicate<"TM.getCodeModel() == CodeModel::Small ||"
 def IsStatic     : Predicate<"TM.getRelocationModel() == Reloc::Static">;
 def IsNotPIC     : Predicate<"TM.getRelocationModel() != Reloc::PIC_">;
 def OptForSize   : Predicate<"OptForSize">;
+def OptForMinSize : Predicate<"OptForMinSize">;
 def OptForSpeed  : Predicate<"!OptForSize">;
 def FastBTMem    : Predicate<"!Subtarget->isBTMemSlow()">;
 def CallImmAddr  : Predicate<"Subtarget->IsLegalToCallImmediateAddr(TM)">;

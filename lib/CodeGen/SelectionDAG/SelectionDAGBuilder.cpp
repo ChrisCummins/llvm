@@ -950,14 +950,12 @@ void SelectionDAGBuilder::resolveDanglingDebugInfo(const Value *V,
     assert(Variable->isValidLocationForIntrinsic(dl) &&
            "Expected inlined-at fields to agree");
     uint64_t Offset = DI->getOffset();
-    // A dbg.value for an alloca is always indirect.
-    bool IsIndirect = isa<AllocaInst>(V) || Offset != 0;
     SDDbgValue *SDV;
     if (Val.getNode()) {
-      if (!EmitFuncArgumentDbgValue(V, Variable, Expr, dl, Offset, IsIndirect,
+      if (!EmitFuncArgumentDbgValue(V, Variable, Expr, dl, Offset, false,
                                     Val)) {
         SDV = DAG.getDbgValue(Variable, Expr, Val.getNode(), Val.getResNo(),
-                              IsIndirect, Offset, dl, DbgSDNodeOrder);
+                              false, Offset, dl, DbgSDNodeOrder);
         DAG.AddDbgValue(SDV, Val.getNode(), false);
       }
     } else
@@ -2175,6 +2173,13 @@ void SelectionDAGBuilder::visitLandingPad(const LandingPadInst &LP) {
   const Constant *PersonalityFn = FuncInfo.Fn->getPersonalityFn();
   if (TLI.getExceptionPointerRegister(PersonalityFn) == 0 &&
       TLI.getExceptionSelectorRegister(PersonalityFn) == 0)
+    return;
+
+  // If landingpad's return type is token type, we don't create DAG nodes
+  // for its exception pointer and selector value. The extraction of exception
+  // pointer or selector value from token type landingpads is not currently
+  // supported.
+  if (LP.getType()->isTokenTy())
     return;
 
   SmallVector<EVT, 2> ValueVTs;
@@ -4508,12 +4513,10 @@ SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I, unsigned Intrinsic) {
         // Check unused arguments map.
         N = UnusedArgNodeMap[V];
       if (N.getNode()) {
-        // A dbg.value for an alloca is always indirect.
-        bool IsIndirect = isa<AllocaInst>(V) || Offset != 0;
         if (!EmitFuncArgumentDbgValue(V, Variable, Expression, dl, Offset,
-                                      IsIndirect, N)) {
+                                      false, N)) {
           SDV = DAG.getDbgValue(Variable, Expression, N.getNode(), N.getResNo(),
-                                IsIndirect, Offset, dl, SDNodeOrder);
+                                false, Offset, dl, SDNodeOrder);
           DAG.AddDbgValue(SDV, N.getNode(), false);
         }
       } else if (!V->use_empty() ) {

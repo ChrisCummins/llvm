@@ -23,6 +23,7 @@
 #include "llvm/CodeGen/MachineDominators.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
+#include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/StackMaps.h"
 #include "llvm/IR/DerivedTypes.h"
@@ -2472,13 +2473,29 @@ void X86InstrInfo::reMaterialize(MachineBasicBlock &MBB,
                                  unsigned DestReg, unsigned SubIdx,
                                  const MachineInstr *Orig,
                                  const TargetRegisterInfo &TRI) const {
-  // MOV32r0 is implemented with a xor which clobbers condition code.
-  // Re-materialize it as movri instructions to avoid side effects.
-  unsigned Opc = Orig->getOpcode();
-  if (Opc == X86::MOV32r0 && !isSafeToClobberEFLAGS(MBB, I)) {
+  bool ClobbersEFLAGS = false;
+  for (const MachineOperand &MO : Orig->operands()) {
+    if (MO.isReg() && MO.isDef() && MO.getReg() == X86::EFLAGS) {
+      ClobbersEFLAGS = true;
+      break;
+    }
+  }
+
+  if (ClobbersEFLAGS && !isSafeToClobberEFLAGS(MBB, I)) {
+    // The instruction clobbers EFLAGS. Re-materialize as MOV32ri to avoid side
+    // effects.
+    int Value;
+    switch (Orig->getOpcode()) {
+    case X86::MOV32r0:  Value = 0; break;
+    case X86::MOV32r1:  Value = 1; break;
+    case X86::MOV32r_1: Value = -1; break;
+    default:
+      llvm_unreachable("Unexpected instruction!");
+    }
+
     DebugLoc DL = Orig->getDebugLoc();
     BuildMI(MBB, I, DL, get(X86::MOV32ri)).addOperand(Orig->getOperand(0))
-      .addImm(0);
+      .addImm(Value);
   } else {
     MachineInstr *MI = MBB.getParent()->CloneMachineInstr(Orig);
     MBB.insert(I, MI);
@@ -4401,7 +4418,8 @@ void X86InstrInfo::copyPhysReg(MachineBasicBlock &MBB,
     int AX = is64 ? X86::RAX : X86::EAX;
 
     if (!Subtarget.hasLAHFSAHF()) {
-      assert(is64 && "Not having LAHF/SAHF only happens on 64-bit.");
+      assert(Subtarget.is64Bit() &&
+             "Not having LAHF/SAHF only happens on 64-bit.");
       // Moving EFLAGS to / from another register requires a push and a pop.
       // Notice that we have to adjust the stack if we don't want to clobber the
       // first frame index. See X86FrameLowering.cpp - clobbersTheStack.
@@ -5262,6 +5280,68 @@ static bool Expand2AddrUndef(MachineInstrBuilder &MIB,
   return true;
 }
 
+static bool expandMOV32r1(MachineInstrBuilder &MIB, const TargetInstrInfo &TII,
+                          bool MinusOne) {
+  MachineBasicBlock &MBB = *MIB->getParent();
+  DebugLoc DL = MIB->getDebugLoc();
+  unsigned Reg = MIB->getOperand(0).getReg();
+
+  // Insert the XOR.
+  BuildMI(MBB, MIB.getInstr(), DL, TII.get(X86::XOR32rr), Reg)
+      .addReg(Reg, RegState::Undef)
+      .addReg(Reg, RegState::Undef);
+
+  // Turn the pseudo into an INC or DEC.
+  MIB->setDesc(TII.get(MinusOne ? X86::DEC32r : X86::INC32r));
+  MIB.addReg(Reg);
+
+  return true;
+}
+
+bool X86InstrInfo::ExpandMOVImmSExti8(MachineInstrBuilder &MIB) const {
+  MachineBasicBlock &MBB = *MIB->getParent();
+  DebugLoc DL = MIB->getDebugLoc();
+  int64_t Imm = MIB->getOperand(1).getImm();
+  assert(Imm != 0 && "Using push/pop for 0 is not efficient.");
+  MachineBasicBlock::iterator I = MIB.getInstr();
+
+  int StackAdjustment;
+
+  if (Subtarget.is64Bit()) {
+    assert(MIB->getOpcode() == X86::MOV64ImmSExti8 ||
+           MIB->getOpcode() == X86::MOV32ImmSExti8);
+    // 64-bit mode doesn't have 32-bit push/pop, so use 64-bit operations and
+    // widen the register if necessary.
+    StackAdjustment = 8;
+    BuildMI(MBB, I, DL, get(X86::PUSH64i8)).addImm(Imm);
+    MIB->setDesc(get(X86::POP64r));
+    MIB->getOperand(0)
+        .setReg(getX86SubSuperRegister(MIB->getOperand(0).getReg(), MVT::i64));
+  } else {
+    assert(MIB->getOpcode() == X86::MOV32ImmSExti8);
+    StackAdjustment = 4;
+    BuildMI(MBB, I, DL, get(X86::PUSH32i8)).addImm(Imm);
+    MIB->setDesc(get(X86::POP32r));
+  }
+
+  // Build CFI if necessary.
+  MachineFunction &MF = *MBB.getParent();
+  const X86FrameLowering *TFL = Subtarget.getFrameLowering();
+  bool IsWin64Prologue = MF.getTarget().getMCAsmInfo()->usesWindowsCFI();
+  bool NeedsDwarfCFI =
+      !IsWin64Prologue &&
+      (MF.getMMI().hasDebugInfo() || MF.getFunction()->needsUnwindTableEntry());
+  bool EmitCFI = !TFL->hasFP(MF) && NeedsDwarfCFI;
+  if (EmitCFI) {
+    TFL->BuildCFI(MBB, I, DL,
+        MCCFIInstruction::createAdjustCfaOffset(nullptr, StackAdjustment));
+    TFL->BuildCFI(MBB, std::next(I), DL,
+        MCCFIInstruction::createAdjustCfaOffset(nullptr, -StackAdjustment));
+  }
+
+  return true;
+}
+
 // LoadStackGuard has so far only been implemented for 64-bit MachO. Different
 // code sequence is needed for other targets.
 static void expandLoadStackGuard(MachineInstrBuilder &MIB,
@@ -5290,6 +5370,13 @@ bool X86InstrInfo::expandPostRAPseudo(MachineBasicBlock::iterator MI) const {
   switch (MI->getOpcode()) {
   case X86::MOV32r0:
     return Expand2AddrUndef(MIB, get(X86::XOR32rr));
+  case X86::MOV32r1:
+    return expandMOV32r1(MIB, *this, /*MinusOne=*/ false);
+  case X86::MOV32r_1:
+    return expandMOV32r1(MIB, *this, /*MinusOne=*/ true);
+  case X86::MOV32ImmSExti8:
+  case X86::MOV64ImmSExti8:
+    return ExpandMOVImmSExti8(MIB);
   case X86::SETB_C8r:
     return Expand2AddrUndef(MIB, get(X86::SBB8rr));
   case X86::SETB_C16r:

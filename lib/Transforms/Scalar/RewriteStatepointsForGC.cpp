@@ -444,16 +444,11 @@ static BaseDefiningValueResult findBaseDefiningValue(Value *I) {
   if (isa<Constant>(I)) {
     assert(!isa<GlobalVariable>(I) && !isa<UndefValue>(I) &&
            "order of checks wrong!");
-    // Note: Finding a constant base for something marked for relocation
-    // doesn't really make sense.  The most likely case is either a) some
-    // screwed up the address space usage or b) your validating against
-    // compiled C++ code w/o the proper separation.  The only real exception
-    // is a null pointer.  You could have generic code written to index of
-    // off a potentially null value and have proven it null.  We also use
-    // null pointers in dead paths of relocation phis (which we might later
-    // want to find a base pointer for).
-    assert(isa<ConstantPointerNull>(I) &&
-           "null is the only case which makes sense");
+    // Note: Even for frontends which don't have constant references, we can
+    // see constants appearing after optimizations.  A simple example is
+    // specialization of an address computation on null feeding into a merge
+    // point where the actual use of the now-constant input is protected by
+    // another null check.  (e.g. test4 in constants.ll)
     return BaseDefiningValueResult(I, true);
   }
 
@@ -641,7 +636,7 @@ public:
 
 private:
   Status status;
-  Value *base; // non null only if status == base
+  AssertingVH<Value> base; // non null only if status == base
 };
 }
 
@@ -1098,10 +1093,10 @@ static Value *findBasePointer(Value *I, DefiningValueMapTy &cache) {
     NewInsts.erase(BaseI);
     ReverseMap.erase(BaseI);
     BaseI->replaceAllUsesWith(Replacement);
-    BaseI->eraseFromParent();
     assert(States.count(BDV));
     assert(States[BDV].isConflict() && States[BDV].getBase() == BaseI);
     States[BDV] = BDVState(BDVState::Conflict, Replacement);
+    BaseI->eraseFromParent();
   };
   const DataLayout &DL = cast<Instruction>(def)->getModule()->getDataLayout();
   while (!Worklist.empty()) {
@@ -1226,7 +1221,7 @@ static void recomputeLiveInValues(GCPtrLivenessData &RevisedLivenessData,
                                   PartiallyConstructedSafepointRecord &result);
 
 static void recomputeLiveInValues(
-    Function &F, DominatorTree &DT, Pass *P, ArrayRef<CallSite> toUpdate,
+    Function &F, DominatorTree &DT, ArrayRef<CallSite> toUpdate,
     MutableArrayRef<struct PartiallyConstructedSafepointRecord> records) {
   // TODO-PERF: reuse the original liveness, then simply run the dataflow
   // again.  The old values are still live and will help it stabilize quickly.
@@ -1937,7 +1932,7 @@ static void insertUseHolderAfter(CallSite &CS, const ArrayRef<Value *> Values,
 }
 
 static void findLiveReferences(
-    Function &F, DominatorTree &DT, Pass *P, ArrayRef<CallSite> toUpdate,
+    Function &F, DominatorTree &DT, ArrayRef<CallSite> toUpdate,
     MutableArrayRef<struct PartiallyConstructedSafepointRecord> records) {
   GCPtrLivenessData OriginalLivenessData;
   computeLiveInValues(DT, F, OriginalLivenessData);
@@ -2276,7 +2271,8 @@ static void rematerializeLiveValues(CallSite CS,
   }
 }
 
-static bool insertParsePoints(Function &F, DominatorTree &DT, Pass *P,
+static bool insertParsePoints(Function &F, DominatorTree &DT,
+                              TargetTransformInfo &TTI,
                               SmallVectorImpl<CallSite> &ToUpdate) {
 #ifndef NDEBUG
   // sanity check the input
@@ -2333,7 +2329,7 @@ static bool insertParsePoints(Function &F, DominatorTree &DT, Pass *P,
 
   // A) Identify all gc pointers which are statically live at the given call
   // site.
-  findLiveReferences(F, DT, P, ToUpdate, Records);
+  findLiveReferences(F, DT, ToUpdate, Records);
 
   // B) Find the base pointers for each live pointer
   /* scope for caching */ {
@@ -2375,7 +2371,7 @@ static bool insertParsePoints(Function &F, DominatorTree &DT, Pass *P,
   // By selecting base pointers, we've effectively inserted new uses. Thus, we
   // need to rerun liveness.  We may *also* have inserted new defs, but that's
   // not the key issue.
-  recomputeLiveInValues(F, DT, P, ToUpdate, Records);
+  recomputeLiveInValues(F, DT, ToUpdate, Records);
 
   if (PrintBasePointers) {
     for (auto &Info : Records) {
@@ -2406,9 +2402,6 @@ static bool insertParsePoints(Function &F, DominatorTree &DT, Pass *P,
   // In order to reduce live set of statepoint we might choose to rematerialize
   // some values instead of relocating them. This is purely an optimization and
   // does not influence correctness.
-  TargetTransformInfo &TTI =
-    P->getAnalysis<TargetTransformInfoWrapperPass>().getTTI(F);
-
   for (size_t i = 0; i < Records.size(); i++)
     rematerializeLiveValues(ToUpdate[i], Records[i], TTI);
 
@@ -2596,6 +2589,8 @@ bool RewriteStatepointsForGC::runOnFunction(Function &F) {
     return false;
 
   DominatorTree &DT = getAnalysis<DominatorTreeWrapperPass>(F).getDomTree();
+  TargetTransformInfo &TTI =
+      getAnalysis<TargetTransformInfoWrapperPass>().getTTI(F);
 
   auto NeedsRewrite = [](Instruction &I) {
     if (UseDeoptBundles) {
@@ -2676,7 +2671,7 @@ bool RewriteStatepointsForGC::runOnFunction(Function &F) {
       }
   }
 
-  MadeChange |= insertParsePoints(F, DT, this, ParsePointNeeded);
+  MadeChange |= insertParsePoints(F, DT, TTI, ParsePointNeeded);
   return MadeChange;
 }
 
