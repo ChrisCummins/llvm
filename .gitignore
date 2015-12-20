@@ -45,6 +45,7 @@ autoconf/autom4te.cache
 # External projects that are tracked independently.
 projects/*
 !projects/*.*
+!projects/libcxx
 !projects/Makefile
 # LLDB, which is tracked independently.
 tools/lldb

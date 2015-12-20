@@ -4,3 +4,6 @@
 [submodule "projects/compiler-rt"]
 	path = projects/compiler-rt
 	url = https://github.com/ChrisCummins/compiler-rt.git
+[submodule "projects/libcxx"]
+	path = projects/libcxx
+	url = https://github.com/llvm-mirror/libcxx.git
