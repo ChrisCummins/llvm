@@ -313,6 +313,7 @@ static void PrintCallingConv(unsigned cc, raw_ostream &Out) {
   case CallingConv::X86_64_Win64:  Out << "x86_64_win64cc"; break;
   case CallingConv::SPIR_FUNC:     Out << "spir_func"; break;
   case CallingConv::SPIR_KERNEL:   Out << "spir_kernel"; break;
+  case CallingConv::X86_INTR:      Out << "x86_intrcc"; break;
   case CallingConv::HHVM:          Out << "hhvmcc"; break;
   case CallingConv::HHVM_C:        Out << "hhvm_ccc"; break;
   }
@@ -2059,7 +2060,7 @@ private:
 
   // printGCRelocateComment - print comment after call to the gc.relocate
   // intrinsic indicating base and derived pointer names.
-  void printGCRelocateComment(const Value &V);
+  void printGCRelocateComment(const GCRelocateInst &Relocate);
 };
 } // namespace
 
@@ -2415,7 +2416,7 @@ void AssemblyWriter::printGlobal(const GlobalVariable *GV) {
     Out << "addrspace(" << AddressSpace << ") ";
   if (GV->isExternallyInitialized()) Out << "externally_initialized ";
   Out << (GV->isConstant() ? "constant " : "global ");
-  TypePrinter.print(GV->getType()->getElementType(), Out);
+  TypePrinter.print(GV->getValueType(), Out);
 
   if (GV->hasInitializer()) {
     Out << ' ';
@@ -2675,7 +2676,7 @@ void AssemblyWriter::printBasicBlock(const BasicBlock *BB) {
     Out << "\n; <label>:";
     int Slot = Machine.getLocalSlot(BB);
     if (Slot != -1)
-      Out << Slot;
+      Out << Slot << ":";
     else
       Out << "<badref>";
   }
@@ -2721,14 +2722,11 @@ void AssemblyWriter::printInstructionLine(const Instruction &I) {
 
 /// printGCRelocateComment - print comment after call to the gc.relocate
 /// intrinsic indicating base and derived pointer names.
-void AssemblyWriter::printGCRelocateComment(const Value &V) {
-  assert(isGCRelocate(&V));
-  GCRelocateOperands GCOps(cast<Instruction>(&V));
-
+void AssemblyWriter::printGCRelocateComment(const GCRelocateInst &Relocate) {
   Out << " ; (";
-  writeOperand(GCOps.getBasePtr(), false);
+  writeOperand(Relocate.getBasePtr(), false);
   Out << ", ";
-  writeOperand(GCOps.getDerivedPtr(), false);
+  writeOperand(Relocate.getDerivedPtr(), false);
   Out << ")";
 }
 
@@ -2736,8 +2734,8 @@ void AssemblyWriter::printGCRelocateComment(const Value &V) {
 /// which slot it occupies.
 ///
 void AssemblyWriter::printInfoComment(const Value &V) {
-  if (isGCRelocate(&V))
-    printGCRelocateComment(V);
+  if (const auto *Relocate = dyn_cast<GCRelocateInst>(&V))
+    printGCRelocateComment(*Relocate);
 
   if (AnnotationWriter)
     AnnotationWriter->printInfoComment(V, Out);
@@ -3123,7 +3121,7 @@ void AssemblyWriter::printMetadataAttachments(
     return;
 
   if (MDNames.empty())
-    TheModule->getMDKindNames(MDNames);
+    MDs[0].second->getContext().getMDKindNames(MDNames);
 
   for (const auto &I : MDs) {
     unsigned Kind = I.first;
@@ -3216,6 +3214,17 @@ void AssemblyWriter::printUseLists(const Function *F) {
 //===----------------------------------------------------------------------===//
 //                       External Interface declarations
 //===----------------------------------------------------------------------===//
+
+void Function::print(raw_ostream &ROS, AssemblyAnnotationWriter *AAW,
+                     bool ShouldPreserveUseListOrder,
+                     bool IsForDebug) const {
+  SlotTracker SlotTable(this->getParent());
+  formatted_raw_ostream OS(ROS);
+  AssemblyWriter W(OS, SlotTable, this->getParent(), AAW,
+                   IsForDebug,
+                   ShouldPreserveUseListOrder);
+  W.printFunction(this);
+}
 
 void Module::print(raw_ostream &ROS, AssemblyAnnotationWriter *AAW,
                    bool ShouldPreserveUseListOrder, bool IsForDebug) const {

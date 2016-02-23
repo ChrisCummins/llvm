@@ -265,7 +265,7 @@ entry:
 }
 
 ; CHECK-LABEL: Str16Ldr16
-; CHECK: mov w0, w1
+; CHECK: and w0, w1, #0xffff
 define i16 @Str16Ldr16(i16* nocapture %P, i16 %v, i64 %n) {
 entry:
   %0 = bitcast i16* %P to i16*
@@ -566,7 +566,7 @@ entry:
 }
 
 ; CHECK-LABEL: Unscaled_Str16Ldr16
-; CHECK: mov w0, w1
+; CHECK: and w0, w1, #0xffff
 define i16 @Unscaled_Str16Ldr16(i16* nocapture %P, i16 %v, i64 %n) {
 entry:
   %0 = bitcast i16* %P to i16*

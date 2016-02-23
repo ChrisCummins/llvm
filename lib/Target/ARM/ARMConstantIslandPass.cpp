@@ -340,12 +340,12 @@ namespace {
 /// verify - check BBOffsets, BBSizes, alignment of islands
 void ARMConstantIslands::verify() {
 #ifndef NDEBUG
-  for (MachineFunction::iterator MBBI = MF->begin(), E = MF->end();
-       MBBI != E; ++MBBI) {
-    MachineBasicBlock *MBB = &*MBBI;
-    unsigned MBBId = MBB->getNumber();
-    assert(!MBBId || BBInfo[MBBId - 1].postOffset() <= BBInfo[MBBId].Offset);
-  }
+  assert(std::is_sorted(MF->begin(), MF->end(),
+                        [this](const MachineBasicBlock &LHS,
+                               const MachineBasicBlock &RHS) {
+                          return BBInfo[LHS.getNumber()].postOffset() <
+                                 BBInfo[RHS.getNumber()].postOffset();
+                        }));
   DEBUG(dbgs() << "Verifying " << CPUsers.size() << " CP users.\n");
   for (unsigned i = 0, e = CPUsers.size(); i != e; ++i) {
     CPUser &U = CPUsers[i];
@@ -478,9 +478,17 @@ bool ARMConstantIslands::runOnMachineFunction(MachineFunction &mf) {
     MadeChange = true;
   }
 
-  // Shrink 32-bit Thumb2 branch, load, and store instructions.
+  // Shrink 32-bit Thumb2 load and store instructions.
   if (isThumb2 && !STI->prefers32BitThumb())
     MadeChange |= optimizeThumb2Instructions();
+
+  // Shrink 32-bit branch instructions.
+  if (isThumb && STI->hasV8MBaselineOps())
+    MadeChange |= optimizeThumb2Branches();
+
+  // Optimize jump tables using TBB / TBH.
+  if (isThumb2)
+    MadeChange |= optimizeThumb2JumpTables();
 
   // After a while, this might be made debug-only, but it is not expensive.
   verify();
@@ -1455,14 +1463,14 @@ void ARMConstantIslands::createNewWater(unsigned CPUserIndex,
   // Avoid splitting an IT block.
   if (LastIT) {
     unsigned PredReg = 0;
-    ARMCC::CondCodes CC = getITInstrPredicate(MI, PredReg);
+    ARMCC::CondCodes CC = getITInstrPredicate(*MI, PredReg);
     if (CC != ARMCC::AL)
       MI = LastIT;
   }
 
   // We really must not split an IT block.
   DEBUG(unsigned PredReg;
-        assert(!isThumb || getITInstrPredicate(MI, PredReg) == ARMCC::AL));
+        assert(!isThumb || getITInstrPredicate(*MI, PredReg) == ARMCC::AL));
 
   NewMBB = splitBlockBeforeInstr(MI);
 }
@@ -1852,8 +1860,6 @@ bool ARMConstantIslands::optimizeThumb2Instructions() {
     }
   }
 
-  MadeChange |= optimizeThumb2Branches();
-  MadeChange |= optimizeThumb2JumpTables();
   return MadeChange;
 }
 
@@ -1910,7 +1916,7 @@ bool ARMConstantIslands::optimizeThumb2Branches() {
 
     NewOpc = 0;
     unsigned PredReg = 0;
-    ARMCC::CondCodes Pred = getInstrPredicate(Br.MI, PredReg);
+    ARMCC::CondCodes Pred = getInstrPredicate(*Br.MI, PredReg);
     if (Pred == ARMCC::EQ)
       NewOpc = ARM::tCBZ;
     else if (Pred == ARMCC::NE)
@@ -1928,7 +1934,7 @@ bool ARMConstantIslands::optimizeThumb2Branches() {
         --CmpMI;
         if (CmpMI->getOpcode() == ARM::tCMPi8) {
           unsigned Reg = CmpMI->getOperand(0).getReg();
-          Pred = getInstrPredicate(CmpMI, PredReg);
+          Pred = getInstrPredicate(*CmpMI, PredReg);
           if (Pred == ARMCC::AL &&
               CmpMI->getOperand(1).getImm() == 0 &&
               isARMLowRegister(Reg)) {
@@ -2245,7 +2251,7 @@ adjustJTTargetBlockForward(MachineBasicBlock *BB, MachineBasicBlock *JTBB) {
   // If the block ends in an unconditional branch, move it. The prior block
   // has to have an analyzable terminator for us to move this one. Be paranoid
   // and make sure we're not trying to move the entry block of the function.
-  if (!B && Cond.empty() && BB != MF->begin() &&
+  if (!B && Cond.empty() && BB != &MF->front() &&
       !TII->AnalyzeBranch(*OldPrior, TBB, FBB, CondPrior)) {
     BB->moveAfter(JTBB);
     OldPrior->updateTerminator();

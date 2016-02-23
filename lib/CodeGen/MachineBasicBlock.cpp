@@ -217,7 +217,7 @@ bool MachineBasicBlock::hasEHPadSuccessor() const {
 }
 
 #if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
-void MachineBasicBlock::dump() const {
+LLVM_DUMP_METHOD void MachineBasicBlock::dump() const {
   print(dbgs());
 }
 #endif
@@ -691,7 +691,7 @@ bool MachineBasicBlock::canFallThrough() {
     // is possible. The isPredicated check is needed because this code can be
     // called during IfConversion, where an instruction which is normally a
     // Barrier is predicated and thus no longer an actual control barrier.
-    return empty() || !back().isBarrier() || TII->isPredicated(&back());
+    return empty() || !back().isBarrier() || TII->isPredicated(back());
   }
 
   // If there is no branch, control always falls through.
@@ -1182,7 +1182,7 @@ MachineBasicBlock::getProbabilityIterator(MachineBasicBlock::succ_iterator I) {
 
 /// Return whether (physical) register "Reg" has been <def>ined and not <kill>ed
 /// as of just before "MI".
-/// 
+///
 /// Search is localised to a neighborhood of
 /// Neighborhood instructions before (searching for defs or kills) and N
 /// instructions after (searching just for defs) MI.

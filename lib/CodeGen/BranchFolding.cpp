@@ -167,7 +167,7 @@ bool BranchFolder::OptimizeImpDefsBlock(MachineBasicBlock *MBB) {
 
   MachineBasicBlock::iterator FirstTerm = I;
   while (I != MBB->end()) {
-    if (!TII->isUnpredicatedTerminator(I))
+    if (!TII->isUnpredicatedTerminator(*I))
       return false;
     // See if it uses any of the implicitly defined registers.
     for (const MachineOperand &MO : I->operands()) {
@@ -744,18 +744,6 @@ bool BranchFolder::CreateCommonTailOnlyBlock(MachineBasicBlock *&PredBB,
   return true;
 }
 
-static bool hasIdenticalMMOs(const MachineInstr *MI1, const MachineInstr *MI2) {
-  auto I1 = MI1->memoperands_begin(), E1 = MI1->memoperands_end();
-  auto I2 = MI2->memoperands_begin(), E2 = MI2->memoperands_end();
-  if ((E1 - I1) != (E2 - I2))
-    return false;
-  for (; I1 != E1; ++I1, ++I2) {
-    if (**I1 != **I2)
-      return false;
-  }
-  return true;
-}
-
 static void
 removeMMOsFromMemoryOperations(MachineBasicBlock::iterator MBBIStartPos,
                                MachineBasicBlock &MBBCommon) {
@@ -792,8 +780,7 @@ removeMMOsFromMemoryOperations(MachineBasicBlock::iterator MBBIStartPos,
     assert(MBBICommon->isIdenticalTo(&*MBBI) && "Expected matching MIIs!");
 
     if (MBBICommon->mayLoad() || MBBICommon->mayStore())
-      if (!hasIdenticalMMOs(&*MBBI, &*MBBICommon))
-        MBBICommon->clearMemRefs();
+      MBBICommon->setMemRefs(MBBICommon->mergeMemRefsWith(*MBBI));
 
     ++MBBI;
     ++MBBICommon;
@@ -1636,7 +1623,7 @@ MachineBasicBlock::iterator findHoistingInsertPosAndDeps(MachineBasicBlock *MBB,
                                                   SmallSet<unsigned,4> &Uses,
                                                   SmallSet<unsigned,4> &Defs) {
   MachineBasicBlock::iterator Loc = MBB->getFirstTerminator();
-  if (!TII->isUnpredicatedTerminator(Loc))
+  if (!TII->isUnpredicatedTerminator(*Loc))
     return MBB->end();
 
   for (const MachineOperand &MO : Loc->operands()) {
@@ -1698,7 +1685,7 @@ MachineBasicBlock::iterator findHoistingInsertPosAndDeps(MachineBasicBlock *MBB,
   // Also avoid moving code above predicated instruction since it's hard to
   // reason about register liveness with predicated instruction.
   bool DontMoveAcrossStore = true;
-  if (!PI->isSafeToMove(nullptr, DontMoveAcrossStore) || TII->isPredicated(PI))
+  if (!PI->isSafeToMove(nullptr, DontMoveAcrossStore) || TII->isPredicated(*PI))
     return MBB->end();
 
 
@@ -1778,7 +1765,7 @@ bool BranchFolder::HoistCommonCodeInSuccs(MachineBasicBlock *MBB) {
     if (!TIB->isIdenticalTo(FIB, MachineInstr::CheckKillDead))
       break;
 
-    if (TII->isPredicated(TIB))
+    if (TII->isPredicated(*TIB))
       // Hard to reason about register liveness with predicated instruction.
       break;
 

@@ -15,7 +15,7 @@
 #include "MipsRegisterInfo.h"
 #include "MipsSubtarget.h"
 #include "llvm/MC/MCContext.h"
-#include "llvm/MC/MCDisassembler.h"
+#include "llvm/MC/MCDisassembler/MCDisassembler.h"
 #include "llvm/MC/MCFixedLenDisassembler.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCSubtargetInfo.h"
@@ -392,11 +392,6 @@ static DecodeStatus DecodeUImmWithOffset(MCInst &Inst, unsigned Value,
                                          uint64_t Address, const void *Decoder);
 
 static DecodeStatus DecodeInsSize(MCInst &Inst,
-                                  unsigned Insn,
-                                  uint64_t Address,
-                                  const void *Decoder);
-
-static DecodeStatus DecodeExtSize(MCInst &Inst,
                                   unsigned Insn,
                                   uint64_t Address,
                                   const void *Decoder);
@@ -1961,15 +1956,6 @@ static DecodeStatus DecodeInsSize(MCInst &Inst,
   // First we need to grab the pos(lsb) from MCInst.
   int Pos = Inst.getOperand(2).getImm();
   int Size = (int) Insn - Pos + 1;
-  Inst.addOperand(MCOperand::createImm(SignExtend32<16>(Size)));
-  return MCDisassembler::Success;
-}
-
-static DecodeStatus DecodeExtSize(MCInst &Inst,
-                                  unsigned Insn,
-                                  uint64_t Address,
-                                  const void *Decoder) {
-  int Size = (int) Insn  + 1;
   Inst.addOperand(MCOperand::createImm(SignExtend32<16>(Size)));
   return MCDisassembler::Success;
 }

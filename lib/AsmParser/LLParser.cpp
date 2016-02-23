@@ -27,6 +27,7 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Operator.h"
 #include "llvm/IR/ValueSymbolTable.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/Dwarf.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/SaveAndRestore.h"
@@ -1546,6 +1547,7 @@ bool LLParser::ParseOptionalDLLStorageClass(unsigned &Res) {
 ///   ::= 'preserve_mostcc'
 ///   ::= 'preserve_allcc'
 ///   ::= 'ghccc'
+///   ::= 'x86_intrcc'
 ///   ::= 'hhvmcc'
 ///   ::= 'hhvm_ccc'
 ///   ::= 'cxx_fast_tlscc'
@@ -1577,6 +1579,7 @@ bool LLParser::ParseOptionalCallingConv(unsigned &CC) {
   case lltok::kw_preserve_mostcc:CC = CallingConv::PreserveMost; break;
   case lltok::kw_preserve_allcc: CC = CallingConv::PreserveAll; break;
   case lltok::kw_ghccc:          CC = CallingConv::GHC; break;
+  case lltok::kw_x86_intrcc:     CC = CallingConv::X86_INTR; break;
   case lltok::kw_hhvmcc:         CC = CallingConv::HHVM; break;
   case lltok::kw_hhvm_ccc:       CC = CallingConv::HHVM_C; break;
   case lltok::kw_cxx_fast_tlscc: CC = CallingConv::CXX_FAST_TLS; break;
@@ -5901,13 +5904,8 @@ int LLParser::ParseCmpXchg(Instruction *&Inst, PerFunctionState &PFS) {
     return Error(CmpLoc, "compare value and pointer type do not match");
   if (cast<PointerType>(Ptr->getType())->getElementType() != New->getType())
     return Error(NewLoc, "new value and pointer type do not match");
-  if (!New->getType()->isIntegerTy())
-    return Error(NewLoc, "cmpxchg operand must be an integer");
-  unsigned Size = New->getType()->getPrimitiveSizeInBits();
-  if (Size < 8 || (Size & (Size - 1)))
-    return Error(NewLoc, "cmpxchg operand must be power-of-two byte-sized"
-                         " integer");
-
+  if (!New->getType()->isFirstClassType())
+    return Error(NewLoc, "cmpxchg operand must be a first class value");
   AtomicCmpXchgInst *CXI = new AtomicCmpXchgInst(
       Ptr, Cmp, New, SuccessOrdering, FailureOrdering, Scope);
   CXI->setVolatile(isVolatile);

@@ -342,14 +342,34 @@ public:
 
   /// \brief Register an analysis pass with the manager.
   ///
-  /// This provides an initialized and set-up analysis pass to the analysis
-  /// manager. Whomever is setting up analysis passes must use this to populate
-  /// the manager with all of the analysis passes available.
-  template <typename PassT> void registerPass(PassT Pass) {
-    assert(!AnalysisPasses.count(PassT::ID()) &&
-           "Registered the same analysis pass twice!");
+  /// The argument is a callable whose result is a pass. This allows passing in
+  /// a lambda to construct the pass.
+  ///
+  /// The pass type registered is the result type of calling the argument. If
+  /// that pass has already been registered, then the argument will not be
+  /// called and this function will return false. Otherwise, the pass type
+  /// becomes registered, with the instance provided by calling the argument
+  /// once, and this function returns true.
+  ///
+  /// While this returns whether or not the pass type was already registered,
+  /// there in't an independent way to query that as that would be prone to
+  /// risky use when *querying* the analysis manager. Instead, the only
+  /// supported use case is avoiding duplicate registry of an analysis. This
+  /// interface also lends itself to minimizing the number of times we have to
+  /// do lookups for analyses or construct complex passes only to throw them
+  /// away.
+  template <typename PassBuilderT> bool registerPass(PassBuilderT PassBuilder) {
+    typedef decltype(PassBuilder()) PassT;
     typedef detail::AnalysisPassModel<IRUnitT, PassT> PassModelT;
-    AnalysisPasses[PassT::ID()].reset(new PassModelT(std::move(Pass)));
+
+    auto &PassPtr = AnalysisPasses[PassT::ID()];
+    if (PassPtr)
+      // Already registered this pass type!
+      return false;
+
+    // Construct a new model around the instance returned by the builder.
+    PassPtr.reset(new PassModelT(PassBuilder()));
+    return true;
   }
 
   /// \brief Invalidate a specific analysis pass for an IR module.
@@ -598,6 +618,10 @@ typedef AnalysisManager<Function> FunctionAnalysisManager;
 /// never use a function analysis manager from within (transitively) a module
 /// pass manager unless your parent module pass has received a proxy result
 /// object for it.
+///
+/// Note that the proxy's result is a move-only object and represents ownership
+/// of the validity of the analyses in the \c FunctionAnalysisManager it
+/// provides.
 class FunctionAnalysisManagerModuleProxy {
 public:
   class Result;
@@ -645,12 +669,18 @@ private:
 class FunctionAnalysisManagerModuleProxy::Result {
 public:
   explicit Result(FunctionAnalysisManager &FAM) : FAM(&FAM) {}
-  // We have to explicitly define all the special member functions because MSVC
-  // refuses to generate them.
-  Result(const Result &Arg) : FAM(Arg.FAM) {}
-  Result(Result &&Arg) : FAM(std::move(Arg.FAM)) {}
-  Result &operator=(Result RHS) {
-    std::swap(FAM, RHS.FAM);
+  Result(Result &&Arg) : FAM(std::move(Arg.FAM)) {
+    // We have to null out the analysis manager in the moved-from state
+    // because we are taking ownership of the responsibilty to clear the
+    // analysis state.
+    Arg.FAM = nullptr;
+  }
+  Result &operator=(Result &&RHS) {
+    FAM = RHS.FAM;
+    // We have to null out the analysis manager in the moved-from state
+    // because we are taking ownership of the responsibilty to clear the
+    // analysis state.
+    RHS.FAM = nullptr;
     return *this;
   }
   ~Result();

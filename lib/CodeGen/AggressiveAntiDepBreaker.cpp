@@ -368,7 +368,7 @@ void AggressiveAntiDepBreaker::PrescanInstruction(MachineInstr *MI,
     // reference either system calls or the register directly. Skip it until we
     // can tell user specified registers from compiler-specified.
     if (MI->isCall() || MI->hasExtraDefRegAllocReq() ||
-        TII->isPredicated(MI) || MI->isInlineAsm()) {
+        TII->isPredicated(*MI) || MI->isInlineAsm()) {
       DEBUG(if (State->GetGroup(Reg) != 0) dbgs() << "->g0(alloc-req)");
       State->UnionGroups(Reg, 0);
     }
@@ -444,9 +444,8 @@ void AggressiveAntiDepBreaker::ScanInstruction(MachineInstr *MI,
   // instruction which may not be executed. The second R6 def may or may not
   // re-define R6 so it's not safe to change it since the last R6 use cannot be
   // changed.
-  bool Special = MI->isCall() ||
-    MI->hasExtraSrcRegAllocReq() ||
-    TII->isPredicated(MI) || MI->isInlineAsm();
+  bool Special = MI->isCall() || MI->hasExtraSrcRegAllocReq() ||
+                 TII->isPredicated(*MI) || MI->isInlineAsm();
 
   // Scan the register uses for this instruction and update
   // live-ranges, groups and RegRefs.
@@ -563,13 +562,16 @@ bool AggressiveAntiDepBreaker::FindSuitableFreeRegisters(
     if (RegRefs.count(Reg) > 0) {
       DEBUG(dbgs() << "\t\t" << TRI->getName(Reg) << ":");
 
-      BitVector BV = GetRenameRegisters(Reg);
-      RenameRegisterMap.insert(std::pair<unsigned, BitVector>(Reg, BV));
+      BitVector &BV = RenameRegisterMap[Reg];
+      assert(BV.empty());
+      BV = GetRenameRegisters(Reg);
 
-      DEBUG(dbgs() << " ::");
-      DEBUG(for (int r = BV.find_first(); r != -1; r = BV.find_next(r))
-              dbgs() << " " << TRI->getName(r));
-      DEBUG(dbgs() << "\n");
+      DEBUG({
+        dbgs() << " ::";
+        for (int r = BV.find_first(); r != -1; r = BV.find_next(r))
+          dbgs() << " " << TRI->getName(r);
+        dbgs() << "\n";
+      });
     }
   }
 
@@ -650,8 +652,7 @@ bool AggressiveAntiDepBreaker::FindSuitableFreeRegisters(
       DEBUG(dbgs() << " " << TRI->getName(NewReg));
 
       // Check if Reg can be renamed to NewReg.
-      BitVector BV = RenameRegisterMap[Reg];
-      if (!BV.test(NewReg)) {
+      if (!RenameRegisterMap[Reg].test(NewReg)) {
         DEBUG(dbgs() << "(no rename)");
         goto next_super_reg;
       }

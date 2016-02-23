@@ -34,6 +34,7 @@ class CFLAAResult : public AAResultBase<CFLAAResult> {
 public:
   explicit CFLAAResult(const TargetLibraryInfo &TLI);
   CFLAAResult(CFLAAResult &&Arg);
+  ~CFLAAResult();
 
   /// Handle invalidation events from the new pass manager.
   ///
@@ -52,13 +53,8 @@ public:
   AliasResult query(const MemoryLocation &LocA, const MemoryLocation &LocB);
 
   AliasResult alias(const MemoryLocation &LocA, const MemoryLocation &LocB) {
-    if (LocA.Ptr == LocB.Ptr) {
-      if (LocA.Size == LocB.Size) {
-        return MustAlias;
-      } else {
-        return PartialAlias;
-      }
-    }
+    if (LocA.Ptr == LocB.Ptr)
+      return LocA.Size == LocB.Size ? MustAlias : PartialAlias;
 
     // Comparisons between global variables and other constants should be
     // handled by BasicAA.
@@ -66,9 +62,8 @@ public:
     // a GlobalValue and ConstantExpr, but every query needs to have at least
     // one Value tied to a Function, and neither GlobalValues nor ConstantExprs
     // are.
-    if (isa<Constant>(LocA.Ptr) && isa<Constant>(LocB.Ptr)) {
+    if (isa<Constant>(LocA.Ptr) && isa<Constant>(LocB.Ptr))
       return AAResultBase::alias(LocA, LocB);
-    }
 
     AliasResult QueryResult = query(LocA, LocB);
     if (QueryResult == MayAlias)

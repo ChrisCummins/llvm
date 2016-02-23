@@ -151,6 +151,7 @@ namespace {
     bool MergeBaseUpdateLSDouble(MachineInstr &MI) const;
     bool LoadStoreMultipleOpti(MachineBasicBlock &MBB);
     bool MergeReturnIntoLDM(MachineBasicBlock &MBB);
+    bool CombineMovBx(MachineBasicBlock &MBB);
   };
   char ARMLoadStoreOpt::ID = 0;
 }
@@ -839,7 +840,7 @@ MachineInstr *ARMLoadStoreOpt::MergeOpsUpdate(const MergeCandidate &Cand) {
   unsigned Base = getLoadStoreBaseOp(*First).getReg();
   bool BaseKill = LatestMI->killsRegister(Base);
   unsigned PredReg = 0;
-  ARMCC::CondCodes Pred = getInstrPredicate(First, PredReg);
+  ARMCC::CondCodes Pred = getInstrPredicate(*First, PredReg);
   DebugLoc DL = First->getDebugLoc();
   MachineInstr *Merged = nullptr;
   if (Cand.CanMergeToLSDouble)
@@ -1101,7 +1102,7 @@ static int isIncrementOrDecrement(const MachineInstr &MI, unsigned Reg,
   unsigned MIPredReg;
   if (MI.getOperand(0).getReg() != Reg ||
       MI.getOperand(1).getReg() != Reg ||
-      getInstrPredicate(&MI, MIPredReg) != Pred ||
+      getInstrPredicate(MI, MIPredReg) != Pred ||
       MIPredReg != PredReg)
     return 0;
 
@@ -1168,7 +1169,7 @@ bool ARMLoadStoreOpt::MergeBaseUpdateLSMultiple(MachineInstr *MI) {
   unsigned Base = BaseOP.getReg();
   bool BaseKill = BaseOP.isKill();
   unsigned PredReg = 0;
-  ARMCC::CondCodes Pred = getInstrPredicate(MI, PredReg);
+  ARMCC::CondCodes Pred = getInstrPredicate(*MI, PredReg);
   unsigned Opcode = MI->getOpcode();
   DebugLoc DL = MI->getDebugLoc();
 
@@ -1290,7 +1291,7 @@ bool ARMLoadStoreOpt::MergeBaseUpdateLoadStore(MachineInstr *MI) {
     return false;
 
   unsigned PredReg = 0;
-  ARMCC::CondCodes Pred = getInstrPredicate(MI, PredReg);
+  ARMCC::CondCodes Pred = getInstrPredicate(*MI, PredReg);
   int Bytes = getLSMultipleTransferSize(MI);
   MachineBasicBlock &MBB = *MI->getParent();
   MachineBasicBlock::iterator MBBI(MI);
@@ -1387,7 +1388,7 @@ bool ARMLoadStoreOpt::MergeBaseUpdateLSDouble(MachineInstr &MI) const {
     return false;
 
   unsigned PredReg;
-  ARMCC::CondCodes Pred = getInstrPredicate(&MI, PredReg);
+  ARMCC::CondCodes Pred = getInstrPredicate(MI, PredReg);
   MachineBasicBlock::iterator MBBI(MI);
   MachineBasicBlock &MBB = *MI.getParent();
   int Offset;
@@ -1548,7 +1549,7 @@ bool ARMLoadStoreOpt::FixInvalidRegPairOp(MachineBasicBlock &MBB,
   bool OffUndef = isT2 ? false : MI->getOperand(3).isUndef();
   int OffImm = getMemoryOpOffset(MI);
   unsigned PredReg = 0;
-  ARMCC::CondCodes Pred = getInstrPredicate(MI, PredReg);
+  ARMCC::CondCodes Pred = getInstrPredicate(*MI, PredReg);
 
   if (OddRegNum > EvenRegNum && OffImm == 0) {
     // Ascending register numbers and no offset. It's safe to change it to a
@@ -1654,7 +1655,7 @@ bool ARMLoadStoreOpt::LoadStoreMultipleOpti(MachineBasicBlock &MBB) {
       unsigned Reg = MO.getReg();
       unsigned Base = getLoadStoreBaseOp(*MBBI).getReg();
       unsigned PredReg = 0;
-      ARMCC::CondCodes Pred = getInstrPredicate(MBBI, PredReg);
+      ARMCC::CondCodes Pred = getInstrPredicate(*MBBI, PredReg);
       int Offset = getMemoryOpOffset(MBBI);
       if (CurrBase == 0) {
         // Start of a new chain.
@@ -1800,7 +1801,11 @@ bool ARMLoadStoreOpt::MergeReturnIntoLDM(MachineBasicBlock &MBB) {
       (MBBI->getOpcode() == ARM::BX_RET ||
        MBBI->getOpcode() == ARM::tBX_RET ||
        MBBI->getOpcode() == ARM::MOVPCLR)) {
-    MachineInstr *PrevMI = std::prev(MBBI);
+    MachineBasicBlock::iterator PrevI = std::prev(MBBI);
+    // Ignore any DBG_VALUE instructions.
+    while (PrevI->isDebugValue() && PrevI != MBB.begin())
+      --PrevI;
+    MachineInstr *PrevMI = PrevI;
     unsigned Opcode = PrevMI->getOpcode();
     if (Opcode == ARM::LDMIA_UPD || Opcode == ARM::LDMDA_UPD ||
         Opcode == ARM::LDMDB_UPD || Opcode == ARM::LDMIB_UPD ||
@@ -1819,6 +1824,30 @@ bool ARMLoadStoreOpt::MergeReturnIntoLDM(MachineBasicBlock &MBB) {
     }
   }
   return false;
+}
+
+bool ARMLoadStoreOpt::CombineMovBx(MachineBasicBlock &MBB) {
+  MachineBasicBlock::iterator MBBI = MBB.getFirstTerminator();
+  if (MBBI == MBB.begin() || MBBI == MBB.end() ||
+      MBBI->getOpcode() != ARM::tBX_RET)
+    return false;
+
+  MachineBasicBlock::iterator Prev = MBBI;
+  --Prev;
+  if (Prev->getOpcode() != ARM::tMOVr || !Prev->definesRegister(ARM::LR))
+    return false;
+
+  for (auto Use : Prev->uses())
+    if (Use.isKill()) {
+      AddDefaultPred(BuildMI(MBB, MBBI, MBBI->getDebugLoc(), TII->get(ARM::tBX))
+          .addReg(Use.getReg(), RegState::Kill))
+          .copyImplicitOps(&*MBBI);
+      MBB.erase(MBBI);
+      MBB.erase(Prev);
+      return true;
+    }
+
+  llvm_unreachable("tMOVr doesn't kill a reg before tBX_RET?");
 }
 
 bool ARMLoadStoreOpt::runOnMachineFunction(MachineFunction &Fn) {
@@ -1840,6 +1869,8 @@ bool ARMLoadStoreOpt::runOnMachineFunction(MachineFunction &Fn) {
     Modified |= LoadStoreMultipleOpti(MBB);
     if (STI->hasV5TOps())
       Modified |= MergeReturnIntoLDM(MBB);
+    if (isThumb1)
+      Modified |= CombineMovBx(MBB);
   }
 
   Allocator.DestroyAll();
@@ -1955,23 +1986,6 @@ static bool IsSafeAndProfitableToMove(bool isLd, unsigned Base,
   return AddedRegPressure.size() <= MemRegs.size() * 2;
 }
 
-
-/// Copy \p Op0 and \p Op1 operands into a new array assigned to MI.
-static void concatenateMemOperands(MachineInstr *MI, MachineInstr *Op0,
-                                   MachineInstr *Op1) {
-  assert(MI->memoperands_empty() && "expected a new machineinstr");
-  size_t numMemRefs = (Op0->memoperands_end() - Op0->memoperands_begin())
-    + (Op1->memoperands_end() - Op1->memoperands_begin());
-
-  MachineFunction *MF = MI->getParent()->getParent();
-  MachineSDNode::mmo_iterator MemBegin = MF->allocateMemRefsArray(numMemRefs);
-  MachineSDNode::mmo_iterator MemEnd =
-    std::copy(Op0->memoperands_begin(), Op0->memoperands_end(), MemBegin);
-  MemEnd =
-    std::copy(Op1->memoperands_begin(), Op1->memoperands_end(), MemEnd);
-  MI->setMemRefs(MemBegin, MemEnd);
-}
-
 bool
 ARMPreAllocLoadStoreOpt::CanFormLdStDWord(MachineInstr *Op0, MachineInstr *Op1,
                                           DebugLoc &dl, unsigned &NewOpc,
@@ -2042,7 +2056,7 @@ ARMPreAllocLoadStoreOpt::CanFormLdStDWord(MachineInstr *Op0, MachineInstr *Op1,
   if (FirstReg == SecondReg)
     return false;
   BaseReg = Op0->getOperand(1).getReg();
-  Pred = getInstrPredicate(Op0, PredReg);
+  Pred = getInstrPredicate(*Op0, PredReg);
   dl = Op0->getDebugLoc();
   return true;
 }
@@ -2165,7 +2179,7 @@ bool ARMPreAllocLoadStoreOpt::RescheduleOps(MachineBasicBlock *MBB,
             if (!isT2)
               MIB.addReg(0);
             MIB.addImm(Offset).addImm(Pred).addReg(PredReg);
-            concatenateMemOperands(MIB, Op0, Op1);
+            MIB.setMemRefs(Op0->mergeMemRefsWith(*Op1));
             DEBUG(dbgs() << "Formed " << *MIB << "\n");
             ++NumLDRDFormed;
           } else {
@@ -2179,7 +2193,7 @@ bool ARMPreAllocLoadStoreOpt::RescheduleOps(MachineBasicBlock *MBB,
             if (!isT2)
               MIB.addReg(0);
             MIB.addImm(Offset).addImm(Pred).addReg(PredReg);
-            concatenateMemOperands(MIB, Op0, Op1);
+            MIB.setMemRefs(Op0->mergeMemRefsWith(*Op1));
             DEBUG(dbgs() << "Formed " << *MIB << "\n");
             ++NumSTRDFormed;
           }
@@ -2236,7 +2250,7 @@ ARMPreAllocLoadStoreOpt::RescheduleLoadStoreInstrs(MachineBasicBlock *MBB) {
       if (!isMemoryOp(*MI))
         continue;
       unsigned PredReg = 0;
-      if (getInstrPredicate(MI, PredReg) != ARMCC::AL)
+      if (getInstrPredicate(*MI, PredReg) != ARMCC::AL)
         continue;
 
       int Opc = MI->getOpcode();

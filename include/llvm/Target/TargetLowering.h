@@ -2204,6 +2204,9 @@ public:
   /// from getBooleanContents().
   bool isConstFalseVal(const SDNode *N) const;
 
+  /// Return if \p N is a True value when extended to \p VT.
+  bool isExtendedTrueVal(const ConstantSDNode *N, EVT VT, bool Signed) const;
+
   /// Try to simplify a setcc built with the specified operands and cc. If it is
   /// unable to simplify it, return a null SDValue.
   SDValue SimplifySetCC(EVT VT, SDValue N0, SDValue N1,
@@ -2266,6 +2269,12 @@ public:
   /// Return true if the target supports that a subset of CSRs for the given
   /// machine function is handled explicitly via copies.
   virtual bool supportSplitCSR(MachineFunction *MF) const {
+    return false;
+  }
+
+  /// Return true if the MachineFunction contains a COPY which would imply
+  /// HasCopyImplyingStackAdjustment.
+  virtual bool hasCopyImplyingStackAdjustment(MachineFunction *MF) const {
     return false;
   }
 
@@ -2453,13 +2462,6 @@ public:
 
   };
 
-  // Mark inreg arguments for lib-calls. For normal calls this is done by
-  // the frontend ABI code.
-  virtual void markInRegArguments(SelectionDAG &DAG, 
-                 TargetLowering::ArgListTy &Args) const {
-    return;
-  }
-
   /// This function lowers an abstract call to a function into an actual call.
   /// This returns a pair of operands.  The first element is the return value
   /// for the function (if RetTy is not VoidTy).  The second element is the
@@ -2535,12 +2537,12 @@ public:
   }
 
   /// Return the type that should be used to zero or sign extend a
-  /// zeroext/signext integer argument or return value.  FIXME: Most C calling
-  /// convention requires the return type to be promoted, but this is not true
-  /// all the time, e.g. i1 on x86-64. It is also not necessary for non-C
-  /// calling conventions. The frontend should handle this and include all of
-  /// the necessary information.
-  virtual EVT getTypeForExtArgOrReturn(LLVMContext &Context, EVT VT,
+  /// zeroext/signext integer return value.  FIXME: Some C calling conventions
+  /// require the return type to be promoted, but this is not true all the time,
+  /// e.g. i1/i8/i16 on x86/x86_64. It is also not necessary for non-C calling
+  /// conventions. The frontend should handle this and include all of the
+  /// necessary information.
+  virtual EVT getTypeForExtReturn(LLVMContext &Context, EVT VT,
                                        ISD::NodeType /*ExtendKind*/) const {
     EVT MinVT = getRegisterType(Context, MVT::i32);
     return VT.bitsLT(MinVT) ? MinVT : VT;

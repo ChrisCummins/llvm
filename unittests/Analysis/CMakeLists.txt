@@ -9,8 +9,10 @@ add_llvm_unittest(AnalysisTests
   AliasAnalysisTest.cpp
   CallGraphTest.cpp
   CFGTest.cpp
+  CGSCCPassManagerTest.cpp
   LazyCallGraphTest.cpp
   ScalarEvolutionTest.cpp
   MixedTBAATest.cpp
   ValueTrackingTest.cpp
+  UnrollAnalyzer.cpp
   )
