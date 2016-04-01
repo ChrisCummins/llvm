@@ -51,6 +51,7 @@ add_llvm_target(AMDGPUCodeGen
   SIFixSGPRLiveRanges.cpp
   SIFoldOperands.cpp
   SIFrameLowering.cpp
+  SIInsertNopsPass.cpp
   SIInsertWaits.cpp
   SIInstrInfo.cpp
   SIISelLowering.cpp
@@ -62,6 +63,7 @@ add_llvm_target(AMDGPUCodeGen
   SIRegisterInfo.cpp
   SIShrinkInstructions.cpp
   SITypeRewriter.cpp
+  SIWholeQuadMode.cpp
   )
 
 add_subdirectory(AsmParser)

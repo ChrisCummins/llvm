@@ -14,6 +14,7 @@
 #include "InstCombineInternal.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/InstructionSimplify.h"
+#include "llvm/Analysis/Loads.h"
 #include "llvm/Analysis/MemoryBuiltins.h"
 #include "llvm/IR/CallSite.h"
 #include "llvm/IR/Dominators.h"
@@ -827,6 +828,83 @@ static Instruction *simplifyMaskedScatter(IntrinsicInst &II, InstCombiner &IC) {
   return nullptr;
 }
 
+// TODO: If the x86 backend knew how to convert a bool vector mask back to an
+// XMM register mask efficiently, we could transform all x86 masked intrinsics
+// to LLVM masked intrinsics and remove the x86 masked intrinsic defs.
+static Instruction *simplifyX86MaskedLoad(IntrinsicInst &II, InstCombiner &IC) {
+  Value *Ptr = II.getOperand(0);
+  Value *Mask = II.getOperand(1);
+
+  // Special case a zero mask since that's not a ConstantDataVector.
+  // This masked load instruction does nothing, so return an undef.
+  if (isa<ConstantAggregateZero>(Mask))
+    return IC.replaceInstUsesWith(II, UndefValue::get(II.getType()));
+
+  auto *ConstMask = dyn_cast<ConstantDataVector>(Mask);
+  if (!ConstMask)
+    return nullptr;
+
+  // The mask is constant. Convert this x86 intrinsic to the LLVM instrinsic
+  // to allow target-independent optimizations.
+
+  // First, cast the x86 intrinsic scalar pointer to a vector pointer to match
+  // the LLVM intrinsic definition for the pointer argument.
+  unsigned AddrSpace = cast<PointerType>(Ptr->getType())->getAddressSpace();
+  PointerType *VecPtrTy = PointerType::get(II.getType(), AddrSpace);
+  Value *PtrCast = IC.Builder->CreateBitCast(Ptr, VecPtrTy, "castvec");
+
+  // Second, convert the x86 XMM integer vector mask to a vector of bools based
+  // on each element's most significant bit (the sign bit).
+  Constant *BoolMask = getNegativeIsTrueBoolVec(ConstMask);
+
+  CallInst *NewMaskedLoad = IC.Builder->CreateMaskedLoad(PtrCast, 1, BoolMask);
+  return IC.replaceInstUsesWith(II, NewMaskedLoad);
+}
+
+// TODO: If the x86 backend knew how to convert a bool vector mask back to an
+// XMM register mask efficiently, we could transform all x86 masked intrinsics
+// to LLVM masked intrinsics and remove the x86 masked intrinsic defs.
+static bool simplifyX86MaskedStore(IntrinsicInst &II, InstCombiner &IC) {
+  Value *Ptr = II.getOperand(0);
+  Value *Mask = II.getOperand(1);
+  Value *Vec = II.getOperand(2);
+
+  // Special case a zero mask since that's not a ConstantDataVector:
+  // this masked store instruction does nothing.
+  if (isa<ConstantAggregateZero>(Mask)) {
+    IC.eraseInstFromFunction(II);
+    return true;
+  }
+
+  // The SSE2 version is too weird (eg, unaligned but non-temporal) to do
+  // anything else at this level.
+  if (II.getIntrinsicID() == Intrinsic::x86_sse2_maskmov_dqu)
+    return false;
+
+  auto *ConstMask = dyn_cast<ConstantDataVector>(Mask);
+  if (!ConstMask)
+    return false;
+
+  // The mask is constant. Convert this x86 intrinsic to the LLVM instrinsic
+  // to allow target-independent optimizations.
+
+  // First, cast the x86 intrinsic scalar pointer to a vector pointer to match
+  // the LLVM intrinsic definition for the pointer argument.
+  unsigned AddrSpace = cast<PointerType>(Ptr->getType())->getAddressSpace();
+  PointerType *VecPtrTy = PointerType::get(Vec->getType(), AddrSpace);
+  Value *PtrCast = IC.Builder->CreateBitCast(Ptr, VecPtrTy, "castvec");
+
+  // Second, convert the x86 XMM integer vector mask to a vector of bools based
+  // on each element's most significant bit (the sign bit).
+  Constant *BoolMask = getNegativeIsTrueBoolVec(ConstMask);
+
+  IC.Builder->CreateMaskedStore(Vec, PtrCast, 1, BoolMask);
+
+  // 'Replace uses' doesn't work for stores. Erase the original masked store.
+  IC.eraseInstFromFunction(II);
+  return true;
+}
+
 /// CallInst simplification. This mostly only handles folding of intrinsic
 /// instructions. For normal calls, it allows visitCallSite to do the heavy
 /// lifting.
@@ -1589,6 +1667,31 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
       return replaceInstUsesWith(*II, V);
     break;
 
+  case Intrinsic::x86_avx_maskload_ps:
+  case Intrinsic::x86_avx_maskload_pd:
+  case Intrinsic::x86_avx_maskload_ps_256:
+  case Intrinsic::x86_avx_maskload_pd_256:
+  case Intrinsic::x86_avx2_maskload_d:
+  case Intrinsic::x86_avx2_maskload_q:
+  case Intrinsic::x86_avx2_maskload_d_256:
+  case Intrinsic::x86_avx2_maskload_q_256:
+    if (Instruction *I = simplifyX86MaskedLoad(*II, *this))
+      return I;
+    break;
+
+  case Intrinsic::x86_sse2_maskmov_dqu:
+  case Intrinsic::x86_avx_maskstore_ps:
+  case Intrinsic::x86_avx_maskstore_pd:
+  case Intrinsic::x86_avx_maskstore_ps_256:
+  case Intrinsic::x86_avx_maskstore_pd_256:
+  case Intrinsic::x86_avx2_maskstore_d:
+  case Intrinsic::x86_avx2_maskstore_q:
+  case Intrinsic::x86_avx2_maskstore_d_256:
+  case Intrinsic::x86_avx2_maskstore_q_256:
+    if (simplifyX86MaskedStore(*II, *this))
+      return nullptr;
+    break;
+
   case Intrinsic::x86_xop_vpcomb:
   case Intrinsic::x86_xop_vpcomd:
   case Intrinsic::x86_xop_vpcomq:
@@ -1743,6 +1846,31 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
 
     break;
   }
+  case Intrinsic::amdgcn_frexp_mant:
+  case Intrinsic::amdgcn_frexp_exp: {
+    Value *Src = II->getArgOperand(0);
+    if (const ConstantFP *C = dyn_cast<ConstantFP>(Src)) {
+      int Exp;
+      APFloat Significand = frexp(C->getValueAPF(), Exp,
+                                  APFloat::rmNearestTiesToEven);
+
+      if (II->getIntrinsicID() == Intrinsic::amdgcn_frexp_mant) {
+        return replaceInstUsesWith(CI, ConstantFP::get(II->getContext(),
+                                                       Significand));
+      }
+
+      // Match instruction special case behavior.
+      if (Exp == APFloat::IEK_NaN || Exp == APFloat::IEK_Inf)
+        Exp = 0;
+
+      return replaceInstUsesWith(CI, ConstantInt::get(II->getType(), Exp));
+    }
+
+    if (isa<UndefValue>(Src))
+      return replaceInstUsesWith(CI, UndefValue::get(II->getType()));
+
+    break;
+  }
   case Intrinsic::stackrestore: {
     // If the save is right next to the restore, remove the restore.  This can
     // happen when variable allocas are DCE'd.
@@ -1768,7 +1896,13 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
           // If there is a stackrestore below this one, remove this one.
           if (II->getIntrinsicID() == Intrinsic::stackrestore)
             return eraseInstFromFunction(CI);
-          // Otherwise, ignore the intrinsic.
+
+          // Bail if we cross over an intrinsic with side effects, such as
+          // llvm.stacksave, llvm.read_register, or llvm.setjmp.
+          if (II->mayHaveSideEffects()) {
+            CannotRemove = true;
+            break;
+          }
         } else {
           // If we found a non-intrinsic call, we can't remove the stack
           // restore.
@@ -2070,7 +2204,15 @@ Instruction *InstCombiner::visitCallSite(CallSite CS) {
   if (!isa<Function>(Callee) && transformConstExprCastCall(CS))
     return nullptr;
 
-  if (Function *CalleeF = dyn_cast<Function>(Callee))
+  if (Function *CalleeF = dyn_cast<Function>(Callee)) {
+    // Remove the convergent attr on calls when the callee is not convergent.
+    if (CS.isConvergent() && !CalleeF->isConvergent()) {
+      DEBUG(dbgs() << "Removing convergent attr from instr "
+                   << CS.getInstruction() << "\n");
+      CS.setNotConvergent();
+      return CS.getInstruction();
+    }
+
     // If the call and callee calling conventions don't match, this call must
     // be unreachable, as the call is undefined.
     if (CalleeF->getCallingConv() != CS.getCallingConv() &&
@@ -2095,6 +2237,7 @@ Instruction *InstCombiner::visitCallSite(CallSite CS) {
                                     Constant::getNullValue(CalleeF->getType()));
       return nullptr;
     }
+  }
 
   if (isa<ConstantPointerNull>(Callee) || isa<UndefValue>(Callee)) {
     // If CS does not return void then replaceAllUsesWith undef.

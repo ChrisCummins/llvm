@@ -30,6 +30,7 @@
 #include "llvm/IR/Verifier.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/IR/LegacyPassManager.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/raw_os_ostream.h"
 #include "llvm/Transforms/IPO.h"
@@ -54,7 +55,9 @@ extern "C" void LLVMInitializeAMDGPUTarget() {
   initializeAMDGPUAnnotateUniformValuesPass(*PR);
   initializeAMDGPUPromoteAllocaPass(*PR);
   initializeSIAnnotateControlFlowPass(*PR);
+  initializeSIInsertNopsPass(*PR);
   initializeSIInsertWaitsPass(*PR);
+  initializeSIWholeQuadModePass(*PR);
   initializeSILowerControlFlowPass(*PR);
 }
 
@@ -145,6 +148,12 @@ GCNTargetMachine::GCNTargetMachine(const Target &T, const Triple &TT,
 //===----------------------------------------------------------------------===//
 
 namespace {
+
+cl::opt<bool> InsertNops(
+  "amdgpu-insert-nops",
+  cl::desc("Insert two nop instructions for each high level source statement"),
+  cl::init(false));
+
 class AMDGPUPassConfig : public TargetPassConfig {
 public:
   AMDGPUPassConfig(TargetMachine *TM, PassManagerBase &PM)
@@ -177,7 +186,7 @@ public:
   bool addGCPasses() override;
 };
 
-class R600PassConfig : public AMDGPUPassConfig {
+class R600PassConfig final : public AMDGPUPassConfig {
 public:
   R600PassConfig(TargetMachine *TM, PassManagerBase &PM)
     : AMDGPUPassConfig(TM, PM) { }
@@ -188,7 +197,7 @@ public:
   void addPreEmitPass() override;
 };
 
-class GCNPassConfig : public AMDGPUPassConfig {
+class GCNPassConfig final : public AMDGPUPassConfig {
 public:
   GCNPassConfig(TargetMachine *TM, PassManagerBase &PM)
     : AMDGPUPassConfig(TM, PM) { }
@@ -338,6 +347,7 @@ void GCNPassConfig::addPreRegAlloc() {
     insertPass(&MachineSchedulerID, &RegisterCoalescerID);
   }
   addPass(createSIShrinkInstructionsPass(), false);
+  addPass(createSIWholeQuadModePass());
 }
 
 void GCNPassConfig::addFastRegAlloc(FunctionPass *RegAllocPass) {
@@ -364,6 +374,9 @@ void GCNPassConfig::addPreSched2() {
 void GCNPassConfig::addPreEmitPass() {
   addPass(createSIInsertWaitsPass(), false);
   addPass(createSILowerControlFlowPass(), false);
+  if (InsertNops) {
+    addPass(createSIInsertNopsPass(), false);
+  }
 }
 
 TargetPassConfig *GCNTargetMachine::createPassConfig(PassManagerBase &PM) {

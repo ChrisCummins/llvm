@@ -55,9 +55,7 @@ struct SparseInstrProfTest : public InstrProfTest {
 
 struct MaybeSparseInstrProfTest : public InstrProfTest,
                                   public ::testing::WithParamInterface<bool> {
-  void SetUp() {
-    Writer.setOutputSparse(GetParam());
-  }
+  void SetUp() { Writer.setOutputSparse(GetParam()); }
 };
 
 TEST_P(MaybeSparseInstrProfTest, write_and_read_empty_profile) {
@@ -154,27 +152,54 @@ TEST_F(InstrProfTest, get_profile_summary) {
   auto Profile = Writer.writeBuffer();
   readProfile(std::move(Profile));
 
-  InstrProfSummary &PS = Reader->getSummary();
-  ASSERT_EQ(2305843009213693952U, PS.getMaxFunctionCount());
-  ASSERT_EQ(2305843009213693952U, PS.getMaxBlockCount());
-  ASSERT_EQ(10U, PS.getNumBlocks());
-  ASSERT_EQ(4539628424389557499U, PS.getTotalCount());
-  std::vector<ProfileSummaryEntry> &Details = PS.getDetailedSummary();
-  uint32_t Cutoff = 800000;
-  auto Predicate = [&Cutoff](const ProfileSummaryEntry &PE) {
-    return PE.Cutoff == Cutoff;
+  auto VerifySummary = [](InstrProfSummary &IPS) mutable {
+    ASSERT_EQ(2305843009213693952U, IPS.getMaxFunctionCount());
+    ASSERT_EQ(2305843009213693952U, IPS.getMaxBlockCount());
+    ASSERT_EQ(10U, IPS.getNumBlocks());
+    ASSERT_EQ(4539628424389557499U, IPS.getTotalCount());
+    std::vector<ProfileSummaryEntry> &Details = IPS.getDetailedSummary();
+    uint32_t Cutoff = 800000;
+    auto Predicate = [&Cutoff](const ProfileSummaryEntry &PE) {
+      return PE.Cutoff == Cutoff;
+    };
+    auto EightyPerc = std::find_if(Details.begin(), Details.end(), Predicate);
+    Cutoff = 900000;
+    auto NinetyPerc = std::find_if(Details.begin(), Details.end(), Predicate);
+    Cutoff = 950000;
+    auto NinetyFivePerc =
+        std::find_if(Details.begin(), Details.end(), Predicate);
+    Cutoff = 990000;
+    auto NinetyNinePerc =
+        std::find_if(Details.begin(), Details.end(), Predicate);
+    ASSERT_EQ(576460752303423488U, EightyPerc->MinCount);
+    ASSERT_EQ(288230376151711744U, NinetyPerc->MinCount);
+    ASSERT_EQ(288230376151711744U, NinetyFivePerc->MinCount);
+    ASSERT_EQ(72057594037927936U, NinetyNinePerc->MinCount);
   };
-  auto EightyPerc = std::find_if(Details.begin(), Details.end(), Predicate);
-  Cutoff = 900000;
-  auto NinetyPerc = std::find_if(Details.begin(), Details.end(), Predicate);
-  Cutoff = 950000;
-  auto NinetyFivePerc = std::find_if(Details.begin(), Details.end(), Predicate);
-  Cutoff = 990000;
-  auto NinetyNinePerc = std::find_if(Details.begin(), Details.end(), Predicate);
-  ASSERT_EQ(576460752303423488U, EightyPerc->MinCount);
-  ASSERT_EQ(288230376151711744U, NinetyPerc->MinCount);
-  ASSERT_EQ(288230376151711744U, NinetyFivePerc->MinCount);
-  ASSERT_EQ(72057594037927936U, NinetyNinePerc->MinCount);
+  InstrProfSummary &PS = Reader->getSummary();
+  VerifySummary(PS);
+
+  // Test that conversion of summary to and from Metadata works.
+  Metadata *MD = PS.getMD(getGlobalContext());
+  ASSERT_TRUE(MD);
+  ProfileSummary *PSFromMD = ProfileSummary::getFromMD(MD);
+  ASSERT_TRUE(PSFromMD);
+  ASSERT_TRUE(isa<InstrProfSummary>(PSFromMD));
+  InstrProfSummary *IPS = cast<InstrProfSummary>(PSFromMD);
+  VerifySummary(*IPS);
+  delete IPS;
+
+  // Test that summary can be attached to and read back from module.
+  Module M("my_module", getGlobalContext());
+  M.setProfileSummary(MD);
+  MD = M.getProfileSummary();
+  ASSERT_TRUE(MD);
+  PSFromMD = ProfileSummary::getFromMD(MD);
+  ASSERT_TRUE(PSFromMD);
+  ASSERT_TRUE(isa<InstrProfSummary>(PSFromMD));
+  IPS = cast<InstrProfSummary>(PSFromMD);
+  VerifySummary(*IPS);
+  delete IPS;
 }
 
 TEST_P(MaybeSparseInstrProfTest, get_icall_data_read_write) {
@@ -305,7 +330,8 @@ TEST_P(MaybeSparseInstrProfTest, annotate_vp_data) {
   // Annotate with 4 records.
   InstrProfValueData VD0Sorted[] = {{1000, 6}, {2000, 5}, {3000, 4}, {4000, 3},
                               {5000, 2}, {6000, 1}};
-  annotateValueSite(*M, *Inst, &VD0Sorted[2], 4, 10, IPVK_IndirectCallTarget, 5);
+  annotateValueSite(*M, *Inst, makeArrayRef(VD0Sorted).slice(2), 10,
+                    IPVK_IndirectCallTarget, 5);
   Res = getValueProfDataFromInst(*Inst, IPVK_IndirectCallTarget, 5,
                                       ValueData, N, T);
   ASSERT_TRUE(Res);
@@ -868,7 +894,7 @@ TEST_P(MaybeSparseInstrProfTest, instr_prof_symtab_compression_test) {
     OS << "func_" << I;
     FuncNames1.push_back(OS.str());
     str.clear();
-    OS << "fooooooooooooooo_" << I;
+    OS << "f oooooooooooooo_" << I;
     FuncNames1.push_back(OS.str());
     str.clear();
     OS << "BAR_" << I;
@@ -906,7 +932,7 @@ TEST_P(MaybeSparseInstrProfTest, instr_prof_symtab_compression_test) {
       StringRef R = Symtab.getFuncName(IndexedInstrProf::ComputeHash(FuncNames1[0]));
       ASSERT_EQ(StringRef("func_0"), R);
       R = Symtab.getFuncName(IndexedInstrProf::ComputeHash(FuncNames1[1]));
-      ASSERT_EQ(StringRef("fooooooooooooooo_0"), R);
+      ASSERT_EQ(StringRef("f oooooooooooooo_0"), R);
       for (int I = 0; I < 3; I++) {
         std::string N[4];
         N[0] = FuncNames1[2 * I];

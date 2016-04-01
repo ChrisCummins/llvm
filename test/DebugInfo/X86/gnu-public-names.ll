@@ -123,6 +123,17 @@
 ; CHECK: DW_AT_linkage_name
 ; CHECK-NOT: DW_TAG
 ; CHECK: DW_AT_name {{.*}} "global_namespace_function"
+
+; CHECK: DW_TAG_subprogram
+; CHECK-NOT: DW_TAG
+; CHECK:   DW_AT_name {{.*}} "f3"
+; CHECK-NOT: {{DW_TAG|NULL}}
+; CHECK: [[F3_Z:.*]]:   DW_TAG_variable
+; CHECK-NOT: DW_TAG
+; CHECK:     DW_AT_name {{.*}} "z"
+; CHECK-NOT: {{DW_TAG|NULL}}
+; CHECK:     DW_AT_location
+; CHECK-NOT: {{DW_TAG|NULL}}
 ; CHECK:   NULL
 ; CHECK-NOT: {{DW_TAG|NULL}}
 
@@ -183,18 +194,6 @@
 ; CHECK-NOT: DW_TAG
 ; CHECK: DW_AT_name {{.*}} "global_function"
 
-; CHECK: DW_TAG_subprogram
-; CHECK-NOT: DW_TAG
-; CHECK:   DW_AT_name {{.*}} "f3"
-; CHECK-NOT: {{DW_TAG|NULL}}
-; CHECK: [[F3_Z:.*]]:   DW_TAG_variable
-; CHECK-NOT: DW_TAG
-; CHECK:     DW_AT_name {{.*}} "z"
-; CHECK-NOT: {{DW_TAG|NULL}}
-; CHECK:     DW_AT_location
-; CHECK-NOT: {{DW_TAG|NULL}}
-; CHECK:   NULL
-
 ; CHECK-LABEL: .debug_gnu_pubnames contents:
 ; CHECK-NEXT: length = {{.*}} version = 0x0002 unit_offset = 0x00000000 unit_size = {{.*}}
 ; CHECK-NEXT: Offset     Linkage  Kind     Name
@@ -202,12 +201,12 @@
 ; CHECK-NEXT:  [[NS]] EXTERNAL TYPE     "ns"
 ; CHECK-NEXT:  [[OUTER_ANON_C]] STATIC VARIABLE "outer::(anonymous namespace)::c"
 ; CHECK-NEXT:  [[ANON_I]] STATIC VARIABLE "(anonymous namespace)::i"
-; CHECK-NEXT:  [[ANON]] EXTERNAL TYPE "(anonymous namespace)"
 ; GCC Doesn't put local statics in pubnames, but it seems not unreasonable and
 ; comes out naturally from LLVM's implementation, so I'm OK with it for now. If
 ; it's demonstrated that this is a major size concern or degrades debug info
 ; consumer behavior, feel free to change it.
 ; CHECK-NEXT:  [[F3_Z]] STATIC VARIABLE "f3::z"
+; CHECK-NEXT:  [[ANON]] EXTERNAL TYPE "(anonymous namespace)"
 ; CHECK-NEXT:  [[OUTER_ANON]] EXTERNAL TYPE "outer::(anonymous namespace)"
 ; CHECK-NEXT:  [[ANON_INNER_B]] STATIC VARIABLE "(anonymous namespace)::inner::b"
 ; CHECK-NEXT:  [[OUTER]] EXTERNAL TYPE "outer"
@@ -301,7 +300,7 @@ attributes #1 = { nounwind readnone }
 !llvm.module.flags = !{!48, !49}
 !llvm.ident = !{!50}
 
-!0 = distinct !DICompileUnit(language: DW_LANG_C_plus_plus, file: !1, producer: "clang version 3.7.0 (trunk 234897) (llvm/trunk 234911)", isOptimized: false, runtimeVersion: 0, emissionKind: 1, enums: !2, retainedTypes: !3, subprograms: !19, globals: !31, imports: !44)
+!0 = distinct !DICompileUnit(language: DW_LANG_C_plus_plus, file: !1, producer: "clang version 3.7.0 (trunk 234897) (llvm/trunk 234911)", isOptimized: false, runtimeVersion: 0, emissionKind: FullDebug, enums: !2, retainedTypes: !3, subprograms: !19, globals: !31, imports: !44)
 !1 = !DIFile(filename: "gnu-public-names.cpp", directory: "/tmp/dbginfo")
 !2 = !{}
 !3 = !{!4, !15}

@@ -1,3 +1,16 @@
+//===-- llvm-dwp.cpp - Split DWARF merging tool for llvm ------------------===//
+//
+//                     The LLVM Compiler Infrastructure
+//
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.TXT for details.
+//
+//===----------------------------------------------------------------------===//
+//
+// A utility for merging DWARF 5 Split DWARF .dwo files into .dwp (DWARF
+// package files).
+//
+//===----------------------------------------------------------------------===//
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringSet.h"
@@ -24,6 +37,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
 #include <list>
+#include <iostream>
 #include <memory>
 #include <system_error>
 #include <unordered_set>
@@ -106,7 +120,24 @@ static uint32_t getCUAbbrev(StringRef Abbrev, uint64_t AbbrCode) {
   return Offset;
 }
 
-static uint64_t getCUSignature(StringRef Abbrev, StringRef Info) {
+struct CompileUnitIdentifiers {
+  uint64_t Signature = 0;
+  const char *Name = "";
+  const char *DWOName = "";
+};
+
+static const char *getIndexedString(uint32_t StrIndex, StringRef StrOffsets,
+                                    StringRef Str) {
+  DataExtractor StrOffsetsData(StrOffsets, true, 0);
+  uint32_t StrOffsetsOffset = 4 * StrIndex;
+  uint32_t StrOffset = StrOffsetsData.getU32(&StrOffsetsOffset);
+  DataExtractor StrData(Str, true, 0);
+  return StrData.getCStr(&StrOffset);
+}
+
+static CompileUnitIdentifiers getCUIdentifiers(StringRef Abbrev, StringRef Info,
+                                               StringRef StrOffsets,
+                                               StringRef Str) {
   uint32_t Offset = 0;
   DataExtractor InfoData(Info, true, 0);
   InfoData.getU32(&Offset); // Length
@@ -126,19 +157,43 @@ static uint64_t getCUSignature(StringRef Abbrev, StringRef Info) {
   AbbrevData.getU8(&AbbrevOffset);
   uint32_t Name;
   uint32_t Form;
+  CompileUnitIdentifiers ID;
   while ((Name = AbbrevData.getULEB128(&AbbrevOffset)) |
              (Form = AbbrevData.getULEB128(&AbbrevOffset)) &&
-         Name != dwarf::DW_AT_GNU_dwo_id) {
-    DWARFFormValue::skipValue(Form, InfoData, &Offset, Version, AddrSize);
+         (Name != 0 || Form != 0)) {
+    switch (Name) {
+    case dwarf::DW_AT_name: {
+      ID.Name = getIndexedString(InfoData.getULEB128(&Offset), StrOffsets, Str);
+      break;
+    }
+    case dwarf::DW_AT_GNU_dwo_name: {
+      ID.DWOName =
+          getIndexedString(InfoData.getULEB128(&Offset), StrOffsets, Str);
+      break;
+    }
+    case dwarf::DW_AT_GNU_dwo_id:
+      ID.Signature = InfoData.getU64(&Offset);
+      break;
+    default:
+      DWARFFormValue::skipValue(Form, InfoData, &Offset, Version, AddrSize);
+    }
   }
-  // FIXME: Real error handling
-  assert(Name == dwarf::DW_AT_GNU_dwo_id);
-  return InfoData.getU64(&Offset);
+  return ID;
 }
 
 struct UnitIndexEntry {
   DWARFUnitIndex::Entry::SectionContribution Contributions[8];
+  std::string Name;
+  std::string DWOName;
+  StringRef DWPName;
 };
+
+StringRef getSubsection(StringRef Section, const DWARFUnitIndex::Entry &Entry, DWARFSectionKind Kind) {
+  const auto *Off = Entry.getOffset(Kind);
+  if (!Off)
+    return StringRef();
+  return Section.substr(Off->Offset, Off->Length);
+}
 
 static void addAllTypesFromDWP(
     MCStreamer &Out, MapVector<uint64_t, UnitIndexEntry> &TypeIndexEntries,
@@ -219,6 +274,9 @@ static void
 writeIndex(MCStreamer &Out, MCSection *Section,
            ArrayRef<unsigned> ContributionOffsets,
            const MapVector<uint64_t, UnitIndexEntry> &IndexEntries) {
+  if (IndexEntries.empty())
+    return;
+
   unsigned Columns = 0;
   for (auto &C : ContributionOffsets)
     if (C)
@@ -282,6 +340,25 @@ static bool consumeCompressedDebugSectionHeader(StringRef &data,
   return true;
 }
 
+void printDuplicateError(const std::pair<uint64_t, UnitIndexEntry> &PrevE,
+                         const CompileUnitIdentifiers &ID, StringRef DWPName) {
+  errs() << "Duplicate DWO ID (" << PrevE.first << ") in '" << PrevE.second.Name
+         << '\'';
+  if (!PrevE.second.DWPName.empty()) {
+    errs() << " (from ";
+    if (!PrevE.second.DWOName.empty())
+      errs() << '\'' << PrevE.second.DWOName << "' in ";
+    errs() << "'" << PrevE.second.DWPName.str() << "')";
+  }
+  errs() << " and '" << ID.Name << '\'';
+  if (!DWPName.empty()) {
+    errs() << " (from ";
+    if (*ID.DWOName)
+      errs() << '\'' << ID.DWOName << "\' in ";
+    errs() << '\'' << DWPName << "')";
+  }
+  errs() << '\n';
+}
 static std::error_code write(MCStreamer &Out, ArrayRef<std::string> Inputs) {
   const auto &MCOFI = *Out.getContext().getObjectFileInfo();
   MCSection *const StrSection = MCOFI.getDwarfStrDWOSection();
@@ -397,8 +474,9 @@ static std::error_code write(MCStreamer &Out, ArrayRef<std::string> Inputs) {
       }
     }
 
-    assert(!AbbrevSection.empty());
-    assert(!InfoSection.empty());
+    if (InfoSection.empty())
+      continue;
+
     if (!CurCUIndexSection.empty()) {
       DWARFUnitIndex CUIndex(DW_SECT_INFO);
       DataExtractor CUIndexData(CurCUIndexSection,
@@ -412,8 +490,19 @@ static std::error_code write(MCStreamer &Out, ArrayRef<std::string> Inputs) {
           continue;
         auto P =
             IndexEntries.insert(std::make_pair(E.getSignature(), CurEntry));
-        // FIXME: Check P.second and error for duplicate CU signatures
+        CompileUnitIdentifiers ID = getCUIdentifiers(
+            getSubsection(AbbrevSection, E, DW_SECT_ABBREV),
+            getSubsection(InfoSection, E, DW_SECT_INFO),
+            getSubsection(CurStrOffsetSection, E, DW_SECT_STR_OFFSETS),
+            CurStrSection);
+        if (!P.second) {
+          printDuplicateError(*P.first, ID, Input);
+          return make_error_code(std::errc::invalid_argument);
+        }
         auto &NewEntry = P.first->second;
+        NewEntry.Name = ID.Name;
+        NewEntry.DWOName = ID.DWOName;
+        NewEntry.DWPName = Input;
         for (auto Kind : CUIndex.getColumnKinds()) {
           auto &C = NewEntry.Contributions[Kind - DW_SECT_INFO];
           C.Offset += I->Offset;
@@ -435,9 +524,15 @@ static std::error_code write(MCStreamer &Out, ArrayRef<std::string> Inputs) {
                            ContributionOffsets[DW_SECT_TYPES - DW_SECT_INFO]);
       }
     } else {
-      IndexEntries.insert(
-          std::make_pair(getCUSignature(AbbrevSection, InfoSection), CurEntry));
-      // FIXME: Check P.second and error for duplicate CU signatures
+      CompileUnitIdentifiers ID = getCUIdentifiers(
+          AbbrevSection, InfoSection, CurStrOffsetSection, CurStrSection);
+      auto P = IndexEntries.insert(std::make_pair(ID.Signature, CurEntry));
+      if (!P.second) {
+        printDuplicateError(*P.first, ID, "");
+        return make_error_code(std::errc::invalid_argument);
+      }
+      P.first->second.Name = ID.Name;
+      P.first->second.DWOName = ID.DWOName;
       addAllTypes(Out, TypeIndexEntries, TypesSection, CurTypesSection,
                   CurEntry, ContributionOffsets[DW_SECT_TYPES - DW_SECT_INFO]);
     }
@@ -448,13 +543,11 @@ static std::error_code write(MCStreamer &Out, ArrayRef<std::string> Inputs) {
       return Err;
   }
 
-  if (!TypeIndexEntries.empty()) {
-    // Lie about there being no info contributions so the TU index only includes
-    // the type unit contribution
-    ContributionOffsets[0] = 0;
-    writeIndex(Out, MCOFI.getDwarfTUIndexSection(), ContributionOffsets,
-               TypeIndexEntries);
-  }
+  // Lie about there being no info contributions so the TU index only includes
+  // the type unit contribution
+  ContributionOffsets[0] = 0;
+  writeIndex(Out, MCOFI.getDwarfTUIndexSection(), ContributionOffsets,
+             TypeIndexEntries);
 
   // Lie about the type contribution
   ContributionOffsets[DW_SECT_TYPES - DW_SECT_INFO] = 0;

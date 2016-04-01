@@ -929,7 +929,7 @@ void ScheduleDAGInstrs::buildSchedGraph(AliasAnalysis *AA,
       RegisterOperands RegOpers;
       RegOpers.collect(*MI, *TRI, MRI, TrackLaneMasks, false);
       if (TrackLaneMasks) {
-        SlotIndex SlotIdx = LIS->getInstructionIndex(MI);
+        SlotIndex SlotIdx = LIS->getInstructionIndex(*MI);
         RegOpers.adjustLaneLiveness(*LIS, MRI, SlotIdx);
       }
       if (PDiffs != nullptr)
@@ -1025,52 +1025,49 @@ void ScheduleDAGInstrs::buildSchedGraph(AliasAnalysis *AA,
 
         // Map this store to 'UnknownValue'.
         Stores.insert(SU, UnknownValue);
-        continue;
+      } else {
+        // Add precise dependencies against all previously seen memory
+        // accesses mapped to the same Value(s).
+        for (auto &underlObj : Objs) {
+          ValueType V = underlObj.getPointer();
+          bool ThisMayAlias = underlObj.getInt();
+
+          Value2SUsMap &stores_ = (ThisMayAlias ? Stores : NonAliasStores);
+
+          // Add dependencies to previous stores and loads mapped to V.
+          addChainDependencies(SU, stores_, V);
+          addChainDependencies(SU, (ThisMayAlias ? Loads : NonAliasLoads), V);
+
+          // Map this store to V.
+          stores_.insert(SU, V);
+        }
+        // The store may have dependencies to unanalyzable loads and
+        // stores.
+        addChainDependencies(SU, Loads, UnknownValue);
+        addChainDependencies(SU, Stores, UnknownValue);
       }
-
-      // Add precise dependencies against all previously seen memory
-      // accesses mapped to the same Value(s).
-      for (auto &underlObj : Objs) {
-        ValueType V = underlObj.getPointer();
-        bool ThisMayAlias = underlObj.getInt();
-
-        Value2SUsMap &stores_ = (ThisMayAlias ? Stores : NonAliasStores);
-
-        // Add dependencies to previous stores and loads mapped to V.
-        addChainDependencies(SU, stores_, V);
-        addChainDependencies(SU, (ThisMayAlias ? Loads : NonAliasLoads), V);
-
-        // Map this store to V.
-        stores_.insert(SU, V);
-      }
-      // The store may have dependencies to unanalyzable loads and
-      // stores.
-      addChainDependencies(SU, Loads, UnknownValue);
-      addChainDependencies(SU, Stores, UnknownValue);
-    }
-    else { // SU is a load.
+    } else { // SU is a load.
       if (Objs.empty()) {
         // An unknown load depends on all stores.
         addChainDependencies(SU, Stores);
         addChainDependencies(SU, NonAliasStores);
 
         Loads.insert(SU, UnknownValue);
-        continue;
+      } else {
+        for (auto &underlObj : Objs) {
+          ValueType V = underlObj.getPointer();
+          bool ThisMayAlias = underlObj.getInt();
+
+          // Add precise dependencies against all previously seen stores
+          // mapping to the same Value(s).
+          addChainDependencies(SU, (ThisMayAlias ? Stores : NonAliasStores), V);
+
+          // Map this load to V.
+          (ThisMayAlias ? Loads : NonAliasLoads).insert(SU, V);
+        }
+        // The load may have dependencies to unanalyzable stores.
+        addChainDependencies(SU, Stores, UnknownValue);
       }
-
-      for (auto &underlObj : Objs) {
-        ValueType V = underlObj.getPointer();
-        bool ThisMayAlias = underlObj.getInt();
-
-        // Add precise dependencies against all previously seen stores
-        // mapping to the same Value(s).
-        addChainDependencies(SU, (ThisMayAlias ? Stores : NonAliasStores), V);
-
-        // Map this load to V.
-        (ThisMayAlias ? Loads : NonAliasLoads).insert(SU, V);
-      }
-      // The load may have dependencies to unanalyzable stores.
-      addChainDependencies(SU, Stores, UnknownValue);
     }
 
     // Reduce maps if they grow huge.
@@ -1201,7 +1198,7 @@ static void toggleBundleKillFlag(MachineInstr *MI, unsigned Reg,
   // might set it on too many operands.  We will clear as many flags as we
   // can though.
   MachineBasicBlock::instr_iterator Begin = MI->getIterator();
-  MachineBasicBlock::instr_iterator End = getBundleEnd(MI);
+  MachineBasicBlock::instr_iterator End = getBundleEnd(*MI);
   while (Begin != End) {
     for (MachineOperand &MO : (--End)->operands()) {
       if (!MO.isReg() || MO.isDef() || Reg != MO.getReg())
@@ -1335,7 +1332,7 @@ void ScheduleDAGInstrs::fixupKills(MachineBasicBlock *MBB) {
         DEBUG(MI->dump());
         DEBUG(if (MI->getOpcode() == TargetOpcode::BUNDLE) {
           MachineBasicBlock::instr_iterator Begin = MI->getIterator();
-          MachineBasicBlock::instr_iterator End = getBundleEnd(MI);
+          MachineBasicBlock::instr_iterator End = getBundleEnd(*MI);
           while (++Begin != End)
             DEBUG(Begin->dump());
         });
