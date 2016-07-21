@@ -26,6 +26,7 @@
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/CFG.h"
+#include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IntrinsicInst.h"
@@ -147,6 +148,9 @@ bool LoopDataPrefetch::isStrideLargeEnough(const SCEVAddRecExpr *AR) {
 }
 
 bool LoopDataPrefetch::runOnFunction(Function &F) {
+  if (skipFunction(F))
+    return false;
+
   LI = &getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
   SE = &getAnalysis<ScalarEvolutionWrapperPass>().getSE();
   DL = &F.getParent()->getDataLayout();
@@ -162,8 +166,8 @@ bool LoopDataPrefetch::runOnFunction(Function &F) {
 
   bool MadeChange = false;
 
-  for (auto I = LI->begin(), IE = LI->end(); I != IE; ++I)
-    for (auto L = df_begin(*I), LE = df_end(*I); L != LE; ++L)
+  for (Loop *I : *LI)
+    for (auto L = df_begin(I), LE = df_end(I); L != LE; ++L)
       MadeChange |= runOnLoop(*L);
 
   return MadeChange;
@@ -185,7 +189,7 @@ bool LoopDataPrefetch::runOnLoop(Loop *L) {
        I != IE; ++I) {
 
     // If the loop already has prefetches, then assume that the user knows
-    // what he or she is doing and don't add any more.
+    // what they are doing and don't add any more.
     for (BasicBlock::iterator J = (*I)->begin(), JE = (*I)->end();
          J != JE; ++J)
       if (CallInst *CI = dyn_cast<CallInst>(J))
@@ -206,9 +210,10 @@ bool LoopDataPrefetch::runOnLoop(Loop *L) {
   if (ItersAhead > getMaxPrefetchIterationsAhead())
     return MadeChange;
 
+  Function *F = L->getHeader()->getParent();
   DEBUG(dbgs() << "Prefetching " << ItersAhead
                << " iterations ahead (loop size: " << LoopSize << ") in "
-               << L->getHeader()->getParent()->getName() << ": " << *L);
+               << F->getName() << ": " << *L);
 
   SmallVector<std::pair<Instruction *, const SCEVAddRecExpr *>, 16> PrefLoads;
   for (Loop::block_iterator I = L->block_begin(), IE = L->block_end();
@@ -248,10 +253,8 @@ bool LoopDataPrefetch::runOnLoop(Loop *L) {
       // is known to be within one cache line of some other load that has
       // already been prefetched, then don't prefetch this one as well.
       bool DupPref = false;
-      for (SmallVector<std::pair<Instruction *, const SCEVAddRecExpr *>,
-             16>::iterator K = PrefLoads.begin(), KE = PrefLoads.end();
-           K != KE; ++K) {
-        const SCEV *PtrDiff = SE->getMinusSCEV(LSCEVAddRec, K->second);
+      for (const auto &PrefLoad : PrefLoads) {
+        const SCEV *PtrDiff = SE->getMinusSCEV(LSCEVAddRec, PrefLoad.second);
         if (const SCEVConstant *ConstPtrDiff =
             dyn_cast<SCEVConstant>(PtrDiff)) {
           int64_t PD = std::abs(ConstPtrDiff->getValue()->getSExtValue());
@@ -288,6 +291,9 @@ bool LoopDataPrefetch::runOnLoop(Loop *L) {
       ++NumPrefetches;
       DEBUG(dbgs() << "  Access: " << *PtrValue << ", SCEV: " << *LSCEV
                    << "\n");
+      emitOptimizationRemark(F->getContext(), DEBUG_TYPE, *F,
+                             MemI->getDebugLoc(), "prefetched memory access");
+
 
       MadeChange = true;
     }

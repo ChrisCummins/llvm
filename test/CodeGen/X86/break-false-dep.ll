@@ -64,7 +64,7 @@ declare float @llvm.sqrt.f32(float)
 declare double @llvm.sqrt.f64(double)
 
 ; SSE-LABEL: loopdep1
-; SSE: for.body
+; SSE: for.body{{$}}
 ;
 ; This loop contains two cvtsi2ss instructions that update the same xmm
 ; register.  Verify that the execution dependency fix pass breaks those
@@ -139,7 +139,7 @@ ret:
 
 ; This loop contains a cvtsi2sd instruction that has a loop-carried
 ; false dependency on an xmm that is modified by other scalar instructions
-; that follow it in the loop. Additionally, the source of convert is a 
+; that follow it in the loop. Additionally, the source of convert is a
 ; memory operand. Verify the execution dependency fix pass breaks this
 ; dependency by inserting a xor before the convert.
 @x = common global [1024 x double] zeroinitializer, align 16
@@ -198,4 +198,14 @@ for.end16:                                        ; preds = %for.inc14
 ;AVX-NEXT: vmulsd {{.*}}, [[XMM0]], [[XMM0]]
 ;AVX-NEXT: vmulsd {{.*}}, [[XMM0]], [[XMM0]]
 ;AVX-NEXT: vmovsd [[XMM0]],
+}
+
+define double @inlineasmdep(i64 %arg) {
+top:
+  tail call void asm sideeffect "", "~{xmm0},~{dirflag},~{fpsr},~{flags}"()
+  %tmp1 = sitofp i64 %arg to double
+  ret double %tmp1
+;AVX-LABEL:@inlineasmdep
+;AVX: vxorps  [[XMM0:%xmm[0-9]+]], [[XMM0]], [[XMM0]]
+;AVX-NEXT: vcvtsi2sdq {{.*}}, [[XMM0]], {{%xmm[0-9]+}}
 }

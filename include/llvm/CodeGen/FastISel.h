@@ -42,13 +42,14 @@ public:
     bool IsInAlloca : 1;
     bool IsReturned : 1;
     bool IsSwiftSelf : 1;
+    bool IsSwiftError : 1;
     uint16_t Alignment;
 
     ArgListEntry()
         : Val(nullptr), Ty(nullptr), IsSExt(false), IsZExt(false),
           IsInReg(false), IsSRet(false), IsNest(false), IsByVal(false),
           IsInAlloca(false), IsReturned(false), IsSwiftSelf(false),
-          Alignment(0) {}
+          IsSwiftError(false), Alignment(0) {}
 
     /// \brief Set CallLoweringInfo attribute flags based on a call instruction
     /// and called function attributes.
@@ -451,7 +452,7 @@ protected:
 
   /// \brief Emit an unconditional branch to the given block, unless it is the
   /// immediate (fall-through) successor, and update the CFG.
-  void fastEmitBranch(MachineBasicBlock *MBB, DebugLoc DL);
+  void fastEmitBranch(MachineBasicBlock *MBB, const DebugLoc &DL);
 
   /// Emit an unconditional branch to \p FalseMBB, obtains the branch weight
   /// and adds TrueMBB and FalseMBB to the successor list.

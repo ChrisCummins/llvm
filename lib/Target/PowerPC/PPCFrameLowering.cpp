@@ -76,9 +76,7 @@ static unsigned computeBasePointerSaveOffset(const PPCSubtarget &STI) {
   // SVR4 ABI: First slot in the general register save area.
   return STI.isPPC64()
              ? -16U
-             : (STI.getTargetMachine().getRelocationModel() == Reloc::PIC_)
-                   ? -12U
-                   : -8U;
+             : STI.getTargetMachine().isPositionIndependent() ? -12U : -8U;
 }
 
 PPCFrameLowering::PPCFrameLowering(const PPCSubtarget &STI)
@@ -596,7 +594,7 @@ PPCFrameLowering::findScratchRegister(MachineBasicBlock *MBB,
       (!UseAtEnd && (&MBB->getParent()->front() == MBB)))
     return true;
 
-  RS.enterBasicBlock(MBB);
+  RS.enterBasicBlock(*MBB);
 
   if (UseAtEnd && !MBB->empty()) {
     // The scratch register will be used at the end of the block, so must
@@ -838,13 +836,20 @@ void PPCFrameLowering::emitPrologue(MachineFunction &MF,
   // If we need to spill the CR and the LR but we don't have two separate
   // registers available, we must spill them one at a time
   if (MustSaveCR && SingleScratchReg && MustSaveLR) {
-    // FIXME: In the ELFv2 ABI, we are not required to save all CR fields.
-    // If only one or two CR fields are clobbered, it could be more
-    // efficient to use mfocrf to selectively save just those fields.
+    // In the ELFv2 ABI, we are not required to save all CR fields.
+    // If only one or two CR fields are clobbered, it is more efficient to use
+    // mfocrf to selectively save just those fields, because mfocrf has short
+    // latency compares to mfcr.
+    unsigned MfcrOpcode = PPC::MFCR8;
+    unsigned CrState = RegState::ImplicitKill;
+    if (isELFv2ABI && MustSaveCRs.size() == 1) {
+      MfcrOpcode = PPC::MFOCRF8;
+      CrState = RegState::Kill;
+    }
     MachineInstrBuilder MIB =
-      BuildMI(MBB, MBBI, dl, TII.get(PPC::MFCR8), TempReg);
+      BuildMI(MBB, MBBI, dl, TII.get(MfcrOpcode), TempReg);
     for (unsigned i = 0, e = MustSaveCRs.size(); i != e; ++i)
-      MIB.addReg(MustSaveCRs[i], RegState::ImplicitKill);
+      MIB.addReg(MustSaveCRs[i], CrState);
     BuildMI(MBB, MBBI, dl, TII.get(PPC::STW8))
       .addReg(TempReg, getKillRegState(true))
       .addImm(8)
@@ -856,13 +861,20 @@ void PPCFrameLowering::emitPrologue(MachineFunction &MF,
 
   if (MustSaveCR &&
       !(SingleScratchReg && MustSaveLR)) { // will only occur for PPC64
-    // FIXME: In the ELFv2 ABI, we are not required to save all CR fields.
-    // If only one or two CR fields are clobbered, it could be more
-    // efficient to use mfocrf to selectively save just those fields.
+    // In the ELFv2 ABI, we are not required to save all CR fields.
+    // If only one or two CR fields are clobbered, it is more efficient to use
+    // mfocrf to selectively save just those fields, because mfocrf has short
+    // latency compares to mfcr.
+    unsigned MfcrOpcode = PPC::MFCR8;
+    unsigned CrState = RegState::ImplicitKill;
+    if (isELFv2ABI && MustSaveCRs.size() == 1) {
+      MfcrOpcode = PPC::MFOCRF8;
+      CrState = RegState::Kill;
+    }
     MachineInstrBuilder MIB =
-      BuildMI(MBB, MBBI, dl, TII.get(PPC::MFCR8), TempReg);
+      BuildMI(MBB, MBBI, dl, TII.get(MfcrOpcode), TempReg);
     for (unsigned i = 0, e = MustSaveCRs.size(); i != e; ++i)
-      MIB.addReg(MustSaveCRs[i], RegState::ImplicitKill);
+      MIB.addReg(MustSaveCRs[i], CrState);
   }
 
   if (HasFP)
@@ -889,7 +901,7 @@ void PPCFrameLowering::emitPrologue(MachineFunction &MF,
   if (MustSaveLR)
     // FIXME: On PPC32 SVR4, we must not spill before claiming the stackframe.
     BuildMI(MBB, MBBI, dl, StoreInst)
-      .addReg(ScratchReg)
+      .addReg(ScratchReg, getKillRegState(true))
       .addImm(LROffset)
       .addReg(SPReg);
 
@@ -1816,7 +1828,7 @@ eliminateCallFramePseudoInstr(MachineFunction &MF, MachineBasicBlock &MBB,
       unsigned LISInstr = is64Bit ? PPC::LIS8 : PPC::LIS;
       unsigned ORIInstr = is64Bit ? PPC::ORI8 : PPC::ORI;
       MachineInstr *MI = I;
-      DebugLoc dl = MI->getDebugLoc();
+      const DebugLoc &dl = MI->getDebugLoc();
 
       if (isInt<16>(CalleeAmt)) {
         BuildMI(MBB, I, dl, TII.get(ADDIInstr), StackReg)

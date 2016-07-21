@@ -126,33 +126,23 @@ bool InstCombiner::ShouldChangeType(Type *From, Type *To) const {
 // all other opcodes, the function conservatively returns false.
 static bool MaintainNoSignedWrap(BinaryOperator &I, Value *B, Value *C) {
   OverflowingBinaryOperator *OBO = dyn_cast<OverflowingBinaryOperator>(&I);
-  if (!OBO || !OBO->hasNoSignedWrap()) {
+  if (!OBO || !OBO->hasNoSignedWrap())
     return false;
-  }
 
   // We reason about Add and Sub Only.
   Instruction::BinaryOps Opcode = I.getOpcode();
-  if (Opcode != Instruction::Add &&
-      Opcode != Instruction::Sub) {
+  if (Opcode != Instruction::Add && Opcode != Instruction::Sub)
     return false;
-  }
 
-  ConstantInt *CB = dyn_cast<ConstantInt>(B);
-  ConstantInt *CC = dyn_cast<ConstantInt>(C);
-
-  if (!CB || !CC) {
+  const APInt *BVal, *CVal;
+  if (!match(B, m_APInt(BVal)) || !match(C, m_APInt(CVal)))
     return false;
-  }
 
-  const APInt &BVal = CB->getValue();
-  const APInt &CVal = CC->getValue();
   bool Overflow = false;
-
-  if (Opcode == Instruction::Add) {
-    BVal.sadd_ov(CVal, Overflow);
-  } else {
-    BVal.ssub_ov(CVal, Overflow);
-  }
+  if (Opcode == Instruction::Add)
+    BVal->sadd_ov(*CVal, Overflow);
+  else
+    BVal->ssub_ov(*CVal, Overflow);
 
   return !Overflow;
 }
@@ -170,6 +160,49 @@ static void ClearSubclassDataAfterReassociation(BinaryOperator &I) {
   FastMathFlags FMF = I.getFastMathFlags();
   I.clearSubclassOptionalData();
   I.setFastMathFlags(FMF);
+}
+
+/// Combine constant operands of associative operations either before or after a
+/// cast to eliminate one of the associative operations:
+/// (op (cast (op X, C2)), C1) --> (cast (op X, op (C1, C2)))
+/// (op (cast (op X, C2)), C1) --> (op (cast X), op (C1, C2))
+static bool simplifyAssocCastAssoc(BinaryOperator *BinOp1) {
+  auto *Cast = dyn_cast<CastInst>(BinOp1->getOperand(0));
+  if (!Cast || !Cast->hasOneUse())
+    return false;
+
+  // TODO: Enhance logic for other casts and remove this check.
+  auto CastOpcode = Cast->getOpcode();
+  if (CastOpcode != Instruction::ZExt)
+    return false;
+
+  // TODO: Enhance logic for other BinOps and remove this check.
+  auto AssocOpcode = BinOp1->getOpcode();
+  if (AssocOpcode != Instruction::Xor && AssocOpcode != Instruction::And &&
+      AssocOpcode != Instruction::Or)
+    return false;
+
+  auto *BinOp2 = dyn_cast<BinaryOperator>(Cast->getOperand(0));
+  if (!BinOp2 || !BinOp2->hasOneUse() || BinOp2->getOpcode() != AssocOpcode)
+    return false;
+
+  Constant *C1, *C2;
+  if (!match(BinOp1->getOperand(1), m_Constant(C1)) ||
+      !match(BinOp2->getOperand(1), m_Constant(C2)))
+    return false;
+
+  // TODO: This assumes a zext cast.
+  // Eg, if it was a trunc, we'd cast C1 to the source type because casting C2
+  // to the destination type might lose bits.
+
+  // Fold the constants together in the destination type:
+  // (op (cast (op X, C2)), C1) --> (op (cast X), FoldedC)
+  Type *DestTy = C1->getType();
+  Constant *CastC2 = ConstantExpr::getCast(CastOpcode, C2, DestTy);
+  Constant *FoldedC = ConstantExpr::get(AssocOpcode, C1, CastC2);
+  Cast->setOperand(0, BinOp2->getOperand(0));
+  BinOp1->setOperand(1, FoldedC);
+  return true;
 }
 
 /// This performs a few simplifications for operators that are associative or
@@ -259,6 +292,12 @@ bool InstCombiner::SimplifyAssociativeOrCommutative(BinaryOperator &I) {
     }
 
     if (I.isAssociative() && I.isCommutative()) {
+      if (simplifyAssocCastAssoc(&I)) {
+        Changed = true;
+        ++NumReassoc;
+        continue;
+      }
+
       // Transform: "(A op B) op C" ==> "(C op A) op B" if "C op A" simplifies.
       if (Op0 && Op0->getOpcode() == Opcode) {
         Value *A = Op0->getOperand(0);
@@ -1398,7 +1437,7 @@ Instruction *InstCombiner::visitGetElementPtrInst(GetElementPtrInst &GEP) {
     if (Op1 == &GEP)
       return nullptr;
 
-    signed DI = -1;
+    int DI = -1;
 
     for (auto I = PN->op_begin()+1, E = PN->op_end(); I !=E; ++I) {
       GetElementPtrInst *Op2 = dyn_cast<GetElementPtrInst>(*I);
@@ -1862,6 +1901,20 @@ Instruction *InstCombiner::visitGetElementPtrInst(GetElementPtrInst &GEP) {
   return nullptr;
 }
 
+static bool isNeverEqualToUnescapedAlloc(Value *V, const TargetLibraryInfo *TLI,
+                                         Instruction *AI) {
+  if (isa<ConstantPointerNull>(V))
+    return true;
+  if (auto *LI = dyn_cast<LoadInst>(V))
+    return isa<GlobalVariable>(LI->getPointerOperand());
+  // Two distinct allocations will never be equal.
+  // We rely on LookThroughBitCast in isAllocLikeFn being false, since looking
+  // through bitcasts of V can cause
+  // the result statement below to be true, even when AI and V (ex:
+  // i8* ->i32* ->i8* of AI) are the same allocations.
+  return isAllocLikeFn(V, TLI) && V != AI;
+}
+
 static bool
 isAllocSiteRemovable(Instruction *AI, SmallVectorImpl<WeakVH> &Users,
                      const TargetLibraryInfo *TLI) {
@@ -1886,7 +1939,12 @@ isAllocSiteRemovable(Instruction *AI, SmallVectorImpl<WeakVH> &Users,
       case Instruction::ICmp: {
         ICmpInst *ICI = cast<ICmpInst>(I);
         // We can fold eq/ne comparisons with null to false/true, respectively.
-        if (!ICI->isEquality() || !isa<ConstantPointerNull>(ICI->getOperand(1)))
+        // We also fold comparisons in some conditions provided the alloc has
+        // not escaped (see isNeverEqualToUnescapedAlloc).
+        if (!ICI->isEquality())
+          return false;
+        unsigned OtherIndex = (ICI->getOperand(0) == PI) ? 1 : 0;
+        if (!isNeverEqualToUnescapedAlloc(ICI->getOperand(OtherIndex), TLI, AI))
           return false;
         Users.emplace_back(I);
         continue;
@@ -2167,6 +2225,7 @@ Instruction *InstCombiner::visitSwitchInst(SwitchInst &SI) {
   unsigned LeadingKnownOnes = KnownOne.countLeadingOnes();
 
   // Compute the number of leading bits we can ignore.
+  // TODO: A better way to determine this would use ComputeNumSignBits().
   for (auto &C : SI.cases()) {
     LeadingKnownZeros = std::min(
         LeadingKnownZeros, C.getCaseValue()->getValue().countLeadingZeros());
@@ -2176,17 +2235,15 @@ Instruction *InstCombiner::visitSwitchInst(SwitchInst &SI) {
 
   unsigned NewWidth = BitWidth - std::max(LeadingKnownZeros, LeadingKnownOnes);
 
-  // Truncate the condition operand if the new type is equal to or larger than
-  // the largest legal integer type. We need to be conservative here since
-  // x86 generates redundant zero-extension instructions if the operand is
-  // truncated to i8 or i16.
+  // Shrink the condition operand if the new type is smaller than the old type.
+  // This may produce a non-standard type for the switch, but that's ok because
+  // the backend should extend back to a legal type for the target.
   bool TruncCond = false;
-  if (NewWidth > 0 && BitWidth > NewWidth &&
-      NewWidth >= DL.getLargestLegalIntTypeSize()) {
+  if (NewWidth > 0 && NewWidth < BitWidth) {
     TruncCond = true;
     IntegerType *Ty = IntegerType::get(SI.getContext(), NewWidth);
     Builder->SetInsertPoint(&SI);
-    Value *NewCond = Builder->CreateTrunc(SI.getCondition(), Ty, "trunc");
+    Value *NewCond = Builder->CreateTrunc(Cond, Ty, "trunc");
     SI.setCondition(NewCond);
 
     for (auto &C : SI.cases())
@@ -2194,28 +2251,27 @@ Instruction *InstCombiner::visitSwitchInst(SwitchInst &SI) {
           SI.getContext(), C.getCaseValue()->getValue().trunc(NewWidth)));
   }
 
-  if (Instruction *I = dyn_cast<Instruction>(Cond)) {
-    if (I->getOpcode() == Instruction::Add)
-      if (ConstantInt *AddRHS = dyn_cast<ConstantInt>(I->getOperand(1))) {
-        // change 'switch (X+4) case 1:' into 'switch (X) case -3'
-        // Skip the first item since that's the default case.
-        for (SwitchInst::CaseIt i = SI.case_begin(), e = SI.case_end();
-             i != e; ++i) {
-          ConstantInt* CaseVal = i.getCaseValue();
-          Constant *LHS = CaseVal;
-          if (TruncCond)
-            LHS = LeadingKnownZeros
-                      ? ConstantExpr::getZExt(CaseVal, Cond->getType())
-                      : ConstantExpr::getSExt(CaseVal, Cond->getType());
-          Constant* NewCaseVal = ConstantExpr::getSub(LHS, AddRHS);
-          assert(isa<ConstantInt>(NewCaseVal) &&
-                 "Result of expression should be constant");
-          i.setValue(cast<ConstantInt>(NewCaseVal));
-        }
-        SI.setCondition(I->getOperand(0));
-        Worklist.Add(I);
-        return &SI;
+  ConstantInt *AddRHS = nullptr;
+  if (match(Cond, m_Add(m_Value(), m_ConstantInt(AddRHS)))) {
+    Instruction *I = cast<Instruction>(Cond);
+    // Change 'switch (X+4) case 1:' into 'switch (X) case -3'.
+    for (SwitchInst::CaseIt i = SI.case_begin(), e = SI.case_end(); i != e;
+         ++i) {
+      ConstantInt *CaseVal = i.getCaseValue();
+      Constant *LHS = CaseVal;
+      if (TruncCond) {
+        LHS = LeadingKnownZeros
+                  ? ConstantExpr::getZExt(CaseVal, Cond->getType())
+                  : ConstantExpr::getSExt(CaseVal, Cond->getType());
       }
+      Constant *NewCaseVal = ConstantExpr::getSub(LHS, AddRHS);
+      assert(isa<ConstantInt>(NewCaseVal) &&
+             "Result of expression should be constant");
+      i.setValue(cast<ConstantInt>(NewCaseVal));
+    }
+    SI.setCondition(I->getOperand(0));
+    Worklist.Add(I);
+    return &SI;
   }
 
   return TruncCond ? &SI : nullptr;
@@ -2370,6 +2426,7 @@ Instruction *InstCombiner::visitExtractValueInst(ExtractValueInst &EV) {
 static bool isCatchAll(EHPersonality Personality, Constant *TypeInfo) {
   switch (Personality) {
   case EHPersonality::GNU_C:
+  case EHPersonality::GNU_C_SjLj:
   case EHPersonality::Rust:
     // The GCC C EH and Rust personality only exists to support cleanups, so
     // it's not clear what the semantics of catch clauses are.
@@ -2381,6 +2438,7 @@ static bool isCatchAll(EHPersonality Personality, Constant *TypeInfo) {
     // match foreign exceptions (or didn't, before gcc-4.7).
     return false;
   case EHPersonality::GNU_CXX:
+  case EHPersonality::GNU_CXX_SjLj:
   case EHPersonality::GNU_ObjC:
   case EHPersonality::MSVC_X86SEH:
   case EHPersonality::MSVC_Win64SEH:
@@ -2724,12 +2782,15 @@ static bool TryToSinkInstruction(Instruction *I, BasicBlock *DestBlock) {
         &DestBlock->getParent()->getEntryBlock())
     return false;
 
+  // Do not sink into catchswitch blocks.
+  if (isa<CatchSwitchInst>(DestBlock->getTerminator()))
+    return false;
+
   // Do not sink convergent call instructions.
   if (auto *CI = dyn_cast<CallInst>(I)) {
     if (CI->isConvergent())
       return false;
   }
-
   // We can only sink load instructions if there is nothing between the load and
   // the end of block that could change the value.
   if (I->mayReadFromMemory()) {
@@ -2823,6 +2884,7 @@ bool InstCombiner::run() {
         if (UserIsSuccessor && UserParent->getSinglePredecessor()) {
           // Okay, the CFG is simple enough, try to sink this instruction.
           if (TryToSinkInstruction(I, UserParent)) {
+            DEBUG(dbgs() << "IC: Sink: " << *I << '\n');
             MadeIRChange = true;
             // We'll add uses of the sunk instruction below, but since sinking
             // can expose opportunities for it's *operands* add them to the
@@ -3032,11 +3094,11 @@ static bool prepareICWorklistFromFunction(Function &F, const DataLayout &DL,
   // Do a quick scan over the function.  If we find any blocks that are
   // unreachable, remove any instructions inside of them.  This prevents
   // the instcombine code from having to deal with some bad special cases.
-  for (Function::iterator BB = F.begin(), E = F.end(); BB != E; ++BB) {
-    if (Visited.count(&*BB))
+  for (BasicBlock &BB : F) {
+    if (Visited.count(&BB))
       continue;
 
-    unsigned NumDeadInstInBB = removeAllNonTerminatorAndEHPadInstructions(&*BB);
+    unsigned NumDeadInstInBB = removeAllNonTerminatorAndEHPadInstructions(&BB);
     MadeIRChange |= NumDeadInstInBB > 0;
     NumDeadInst += NumDeadInstInBB;
   }
@@ -3097,7 +3159,7 @@ PreservedAnalyses InstCombinePass::run(Function &F,
     return PreservedAnalyses::all();
 
   // Mark all the analyses that instcombine updates as preserved.
-  // FIXME: Need a way to preserve CFG analyses here!
+  // FIXME: This should also 'preserve the CFG'.
   PreservedAnalyses PA;
   PA.preserve<DominatorTreeAnalysis>();
   return PA;
@@ -3116,7 +3178,7 @@ void InstructionCombiningPass::getAnalysisUsage(AnalysisUsage &AU) const {
 }
 
 bool InstructionCombiningPass::runOnFunction(Function &F) {
-  if (skipOptnoneFunction(F))
+  if (skipFunction(F))
     return false;
 
   // Required analyses.

@@ -65,6 +65,7 @@ representation.
    :hidden:
 
    CMake
+   CMakePrimer
    AdvancedBuilds
    HowToBuildOnARM
    HowToCrossCompileLLVM
@@ -86,7 +87,9 @@ representation.
    GetElementPtr
    Frontend/PerformanceTips
    MCJITDesignAndImplementation
+   CodeOfConduct
    CompileCudaWithLLVM
+   ReportingGuide
 
 :doc:`GettingStarted`
    Discusses how to get up and running quickly with the LLVM infrastructure.
@@ -175,6 +178,7 @@ For developers of applications which use LLVM as a library.
    ProgrammersManual
    Extensions
    LibFuzzer
+   ScudoHardenedAllocator
 
 :doc:`LLVM Language Reference Manual <LangRef>`
   Defines the LLVM intermediate representation and the assembly form of the
@@ -219,6 +223,9 @@ For developers of applications which use LLVM as a library.
 :doc:`LibFuzzer`
   A library for writing in-process guided fuzzers.
 
+:doc:`ScudoHardenedAllocator`
+  A library that implements a security-hardened `malloc()`.
+
 Subsystem Documentation
 =======================
 
@@ -256,7 +263,7 @@ For API clients and LLVM developers.
    CoverageMappingFormat
    Statepoints
    MergeFunctions
-   BitSets
+   TypeMetadata
    FaultMaps
    MIRLangRef
 
@@ -480,6 +487,25 @@ This channel has several bots.
 
 * clang-bot - A `geordi <http://www.eelis.net/geordi/>`_ instance running
   near-trunk clang instead of gcc.
+
+Community wide proposals
+------------------------
+
+Proposals for massive changes in how the community behaves and how the work flow
+can be better.
+
+.. toctree::
+   :hidden:
+
+   CodeOfConduct
+   Proposals/GitHub
+
+:doc:`CodeOfConduct`
+   Proposal to adopt a code of conduct on the LLVM social spaces (lists, events,
+   IRC, etc).
+
+:doc:`Proposals/GitHub`
+   Proposal to move from SVN/Git to GitHub.
 
 
 Indices and tables

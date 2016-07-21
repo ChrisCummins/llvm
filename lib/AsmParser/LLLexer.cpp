@@ -513,6 +513,7 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(hidden);
   KEYWORD(protected);
   KEYWORD(unnamed_addr);
+  KEYWORD(local_unnamed_addr);
   KEYWORD(externally_initialized);
   KEYWORD(extern_weak);
   KEYWORD(external);
@@ -560,6 +561,7 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(addrspace);
   KEYWORD(section);
   KEYWORD(alias);
+  KEYWORD(ifunc);
   KEYWORD(module);
   KEYWORD(asm);
   KEYWORD(sideeffect);
@@ -590,6 +592,7 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(x86_64_sysvcc);
   KEYWORD(x86_64_win64cc);
   KEYWORD(webkit_jscc);
+  KEYWORD(swiftcc);
   KEYWORD(anyregcc);
   KEYWORD(preserve_mostcc);
   KEYWORD(preserve_allcc);
@@ -598,6 +601,11 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(hhvmcc);
   KEYWORD(hhvm_ccc);
   KEYWORD(cxx_fast_tlscc);
+  KEYWORD(amdgpu_vs);
+  KEYWORD(amdgpu_gs);
+  KEYWORD(amdgpu_ps);
+  KEYWORD(amdgpu_cs);
+  KEYWORD(amdgpu_kernel);
 
   KEYWORD(cc);
   KEYWORD(c);
@@ -605,6 +613,7 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(attributes);
 
   KEYWORD(alwaysinline);
+  KEYWORD(allocsize);
   KEYWORD(argmemonly);
   KEYWORD(builtin);
   KEYWORD(byval);
@@ -648,8 +657,10 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(sanitize_address);
   KEYWORD(sanitize_thread);
   KEYWORD(sanitize_memory);
+  KEYWORD(swifterror);
   KEYWORD(swiftself);
   KEYWORD(uwtable);
+  KEYWORD(writeonly);
   KEYWORD(zeroext);
 
   KEYWORD(type);
@@ -784,6 +795,7 @@ lltok::Kind LLLexer::LexIdentifier() {
   DWKEYWORD(ATE, DwarfAttEncoding);
   DWKEYWORD(VIRTUALITY, DwarfVirtuality);
   DWKEYWORD(LANG, DwarfLang);
+  DWKEYWORD(CC, DwarfCC);
   DWKEYWORD(OP, DwarfOp);
   DWKEYWORD(MACINFO, DwarfMacinfo);
 #undef DWKEYWORD
@@ -949,7 +961,8 @@ lltok::Kind LLLexer::LexDigitOrNegative() {
     }
   }
 
-  APFloatVal = APFloat(std::atof(TokStart));
+  APFloatVal = APFloat(APFloat::IEEEdouble,
+                       StringRef(TokStart, CurPtr - TokStart));
   return lltok::APFloat;
 }
 
@@ -985,6 +998,7 @@ lltok::Kind LLLexer::LexPositive() {
     }
   }
 
-  APFloatVal = APFloat(std::atof(TokStart));
+  APFloatVal = APFloat(APFloat::IEEEdouble,
+                       StringRef(TokStart, CurPtr - TokStart));
   return lltok::APFloat;
 }

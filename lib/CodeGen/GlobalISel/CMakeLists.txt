@@ -2,6 +2,10 @@
 set(GLOBAL_ISEL_FILES
       IRTranslator.cpp
       MachineIRBuilder.cpp
+      MachineLegalizer.cpp
+      RegBankSelect.cpp
+      RegisterBank.cpp
+      RegisterBankInfo.cpp
       )
 
 # Add GlobalISel files to the dependencies if the user wants to build it.
